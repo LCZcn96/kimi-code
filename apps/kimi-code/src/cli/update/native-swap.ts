@@ -17,7 +17,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { readdir, readFile, rename, rmdir, stat, unlink } from 'node:fs/promises';
+import { readdir, readFile, rename, rmdir, stat, unlink, utimes } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -171,6 +171,11 @@ async function claimStagedUpdate(exePath: string): Promise<ClaimedStaged | null>
   } catch {
     return null;
   }
+  // rename preserves the metadata's mtime, which can be arbitrarily old — the
+  // download may have finished hours before this launch. Stamp the claim so a
+  // concurrent launch's sweep does not misread this live claim as crash
+  // residue and delete the staged exe (and this swap's rollback backup).
+  await utimes(claimedPath, new Date(), new Date()).catch(() => {});
   return { staged, claimedPath };
 }
 

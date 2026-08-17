@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -442,5 +443,72 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     await expect(
       stat(join(stagingDir, `staged.json.swap-${process.pid}`)),
     ).resolves.toBeDefined();
+  });
+
+  it('stamps the claim with a fresh mtime so a concurrent launch does not misread it as stale', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    // The metadata may have been staged long before this launch (background
+    // download finished hours ago); rename alone would keep that old mtime.
+    const longAgo = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(getNativeStagedStateFile(exePath), longAgo, longAgo);
+
+    // Instance A: park inside the smoke check, holding the claim mid-swap.
+    let releaseSmoke!: () => void;
+    const smokeGate = new Promise<void>((resolve) => {
+      releaseSmoke = resolve;
+    });
+    const spawnImplA = ((cmd: string, args: readonly string[]) => {
+      if (args[0] !== '--version') return fakeChild({ code: 0 }).child; // re-exec
+      const listeners = new Map<string, (...args: unknown[]) => void>();
+      const stdoutListeners: Array<(chunk: Buffer) => void> = [];
+      const child = {
+        once(event: string, cb: (...args: unknown[]) => void) {
+          listeners.set(event, cb);
+        },
+        stdout: {
+          on(_event: 'data', cb: (chunk: Buffer) => void) {
+            stdoutListeners.push(cb);
+          },
+        },
+        kill: vi.fn(),
+      };
+      const emitSmokeSuccess = (): void => {
+        for (const cb of stdoutListeners) cb(Buffer.from(`${STAGED_VERSION}\n`));
+        listeners.get('close')?.(0, null);
+        listeners.get('exit')?.(0, null);
+      };
+      queueMicrotask(() => {
+        void smokeGate.then(emitSmokeSuccess);
+      });
+      return child;
+    }) as unknown as NativeSwapDeps['spawnImpl'];
+    const promiseA = maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl: spawnImplA }));
+
+    // Wait until A holds the claim.
+    const stagingDir = getNativeStagingDir(exePath);
+    const claimPath = join(stagingDir, `staged.json.swap-${process.pid}`);
+    await vi.waitFor(() => {
+      expect(existsSync(claimPath)).toBe(true);
+    });
+    // The claim carries the claim time, not the staged file's old mtime.
+    expect((await stat(claimPath)).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
+
+    // Instance B: its sweep must treat A's claim as live and touch nothing.
+    const { calls: callsB, spawnImpl: spawnImplB } = createSpawnMock({});
+    const relaunchedB = await maybeRelaunchWithStagedNativeUpdate(
+      makeDeps(exePath, { spawnImpl: spawnImplB }),
+    );
+    expect(relaunchedB).toBe(false);
+    expect(callsB).toHaveLength(0);
+    await expect(stat(claimPath)).resolves.toBeDefined();
+    await expect(
+      stat(join(stagingDir, stagedExeFileName(STAGED_VERSION, 'linux'))),
+    ).resolves.toBeDefined();
+
+    // A finishes the swap unharmed.
+    releaseSmoke();
+    await expect(promiseA).resolves.toBe(true);
+    const newExe = await readFile(exePath);
+    expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
   });
 });
