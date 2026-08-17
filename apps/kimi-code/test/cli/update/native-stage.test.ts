@@ -131,6 +131,56 @@ describe('stageNativeUpdate', () => {
     expect(progress).toEqual([[PAYLOAD.length, PAYLOAD.length]]);
   });
 
+  it('aborts a stalled download after the idle timeout', async () => {
+    const manifestBody = JSON.stringify({
+      version: VERSION,
+      platforms: {
+        'linux-x64': { filename: BINARY_FILENAME, checksum: 'a'.repeat(64) },
+      },
+    });
+    const fetchImpl = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === nativeManifestUrl(VERSION)) {
+        return { ok: true, status: 200, text: async () => manifestBody, body: null };
+      }
+      if (url === nativeBinaryUrl(VERSION, BINARY_FILENAME)) {
+        const signal = init?.signal;
+        const body = (async function* (): AsyncGenerator<Buffer> {
+          yield Buffer.from('first-chunk');
+          // Stall forever — only the idle timeout's abort can end this.
+          await new Promise((_, reject) => {
+            signal?.addEventListener('abort', () => {
+              reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'));
+            }, { once: true });
+          });
+        })();
+        return {
+          ok: true,
+          status: 200,
+          text: async (): Promise<string> => '',
+          headers: { get: (): string | null => null },
+          body,
+        };
+      }
+      return { ok: false, status: 404, text: async (): Promise<string> => '', body: null };
+    }) as unknown as typeof fetch;
+
+    // Real timers with a 50 ms test override — fake timers interact badly
+    // with async-generator suspension, so the idle timeout is injectable.
+    await expect(
+      stageNativeUpdate({
+        version: VERSION,
+        exePath,
+        platform: 'linux',
+        arch: 'x64',
+        fetchImpl,
+        idleTimeoutMs: 50,
+      }),
+    ).rejects.toThrow(/stalled/);
+    // The failed attempt cleans up after itself.
+    expect(await readStagedNativeUpdate(exePath)).toBeNull();
+  });
+
   it('short-circuits when the same version is already staged', async () => {
     const firstFetch = mockCdnFetch({ payload: PAYLOAD });
     await stageNativeUpdate({ version: VERSION, exePath, platform: 'linux', arch: 'x64', fetchImpl: firstFetch });

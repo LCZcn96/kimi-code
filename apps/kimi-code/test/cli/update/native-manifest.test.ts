@@ -87,6 +87,29 @@ describe('fetchNativeReleaseManifest', () => {
     }) as unknown as typeof fetch;
     await expect(fetchNativeReleaseManifest(VERSION, f)).rejects.toThrow(/network down/);
   });
+
+  it('rejects when the response body stalls past the request timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = vi.fn(async (_input: string | URL, init?: RequestInit) => ({
+        ok: true,
+        status: 200,
+        // Headers arrive, then the body stalls; only the timeout can end this.
+        text: async () =>
+          new Promise<string>((_, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(new Error('aborted'));
+            }, { once: true });
+          }),
+      })) as unknown as typeof fetch;
+      const promise = fetchNativeReleaseManifest(VERSION, f);
+      const assertion = expect(promise).rejects.toThrow(/aborted/);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('selectPlatformEntry', () => {

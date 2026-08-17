@@ -60,16 +60,18 @@ export async function fetchNativeReleaseManifest(
   const timeout = setTimeout(() => {
     controller.abort();
   }, MANIFEST_FETCH_TIMEOUT_MS);
-  let response: Response;
+  // The timeout must stay armed until the BODY is fully consumed: a CDN or
+  // proxy can deliver headers within the limit and then stall mid-body, and
+  // resolving `fetch()` alone would clear the timer and hang the worker.
   try {
-    response = await fetchImpl(nativeManifestUrl(version), { signal: controller.signal });
+    const response = await fetchImpl(nativeManifestUrl(version), { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`native manifest for ${version} returned HTTP ${response.status}`);
+    }
+    return NativeReleaseManifestSchema.parse(JSON.parse(await response.text()));
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    throw new Error(`native manifest for ${version} returned HTTP ${response.status}`);
-  }
-  return NativeReleaseManifestSchema.parse(JSON.parse(await response.text()));
 }
 
 /**

@@ -141,6 +141,8 @@ export interface StageNativeUpdateOptions {
   readonly fetchImpl?: typeof fetch;
   /** Download progress (bytes so far, Content-Length total when known). */
   readonly onProgress?: (downloadedBytes: number, totalBytes: number | null) => void;
+  /** Test hook: override the download idle timeout (default 30 s). */
+  readonly idleTimeoutMs?: number;
 }
 
 export type StageNativeUpdateStatus = 'already-staged' | 'staged';
@@ -150,15 +152,39 @@ export interface StageNativeUpdateResult {
   readonly staged: StagedNativeUpdate;
 }
 
+/**
+ * Idle timeout for the binary stream: any 30 s without a arriving chunk
+ * aborts the download. Total duration is intentionally unbounded — slow
+ * networks may take as long as they need as long as bytes keep flowing.
+ */
+const DOWNLOAD_IDLE_TIMEOUT_MS = 30_000;
+
 async function downloadAndHash(
   url: string,
   partPath: string,
   expectedSha256: string,
   fetchImpl: typeof fetch,
   onProgress?: (downloadedBytes: number, totalBytes: number | null) => void,
+  idleTimeoutMs: number = DOWNLOAD_IDLE_TIMEOUT_MS,
 ): Promise<number> {
-  const response = await fetchImpl(url);
+  const controller = new AbortController();
+  let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+  const armIdleTimeout = (): void => {
+    if (idleTimeout !== undefined) clearTimeout(idleTimeout);
+    idleTimeout = setTimeout(() => {
+      controller.abort(new Error(`download stalled: no data for ${idleTimeoutMs}ms`));
+    }, idleTimeoutMs);
+  };
+  armIdleTimeout();
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { signal: controller.signal });
+  } catch (error) {
+    clearTimeout(idleTimeout);
+    throw error;
+  }
   if (!response.ok || response.body === null) {
+    clearTimeout(idleTimeout);
     throw new Error(`native binary download returned HTTP ${response.status}`);
   }
   const contentLength = response.headers.get('content-length');
@@ -169,12 +195,14 @@ async function downloadAndHash(
   const file = await open(partPath, 'w');
   try {
     for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+      armIdleTimeout();
       hash.update(chunk);
       size += chunk.length;
       await file.write(chunk);
       onProgress?.(size, total);
     }
   } finally {
+    clearTimeout(idleTimeout);
     await file.close();
   }
   const digest = hash.digest('hex');
@@ -235,6 +263,7 @@ export async function stageNativeUpdate(
       entry.checksum,
       fetchImpl,
       options.onProgress,
+      options.idleTimeoutMs,
     );
     // sha256 matched the manifest: promote the download to the staged exe.
     await rename(partPath, stagedExePath(options.exePath, staged));
