@@ -27,16 +27,37 @@ function isAlreadyExists(error: unknown): boolean {
   );
 }
 
+/**
+ * Liveness probe for the lock holder. Signal 0 delivers nothing; ESRCH means
+ * the process is gone, EPERM means it exists but may not be signalled — which
+ * still counts as alive.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 async function isStaleLock(filePath: string, now: Date): Promise<boolean> {
   try {
     const raw = await readFile(filePath, 'utf-8');
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== 'object' || parsed === null) return true;
-    const lock = parsed as { readonly startedAt?: unknown };
+    const lock = parsed as { readonly startedAt?: unknown; readonly pid?: unknown };
     if (typeof lock.startedAt !== 'string') return true;
     const startedAt = Date.parse(lock.startedAt);
     if (!Number.isFinite(startedAt)) return true;
-    return now.getTime() - startedAt > UPDATE_INSTALL_LOCK_STALE_MS;
+    if (now.getTime() - startedAt <= UPDATE_INSTALL_LOCK_STALE_MS) return false;
+    // Past the age threshold the holder's liveness decides. A native download
+    // is idle-bounded but intentionally not duration-bounded, so a slow link
+    // legitimately exceeds it; sweeping that lock would let a second
+    // downloader write the same `.staging` paths concurrently. (A pid reused
+    // by an unrelated process can pin the lock until that process exits — a
+    // delayed update, never a corrupt one.)
+    return typeof lock.pid === 'number' ? !isProcessAlive(lock.pid) : true;
   } catch (error) {
     if (isNotFound(error)) return true;
     if (error instanceof SyntaxError) return true;

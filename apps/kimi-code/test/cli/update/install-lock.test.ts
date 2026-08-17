@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -41,6 +42,41 @@ describe('update install lock', () => {
     const filePath = getUpdateInstallLockFile();
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, '{', 'utf-8');
+
+    const lock = await tryAcquireUpdateInstallLock({ version: '0.5.0' });
+
+    expect(lock).not.toBeNull();
+    await lock?.release();
+  });
+
+  function writeAgedLock(pid: number): void {
+    const filePath = getUpdateInstallLockFile();
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(
+      filePath,
+      `${JSON.stringify({
+        version: '0.5.0',
+        pid,
+        startedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      })}\n`,
+      'utf-8',
+    );
+  }
+
+  it('does not treat an aged lock as stale while its holder process is alive', async () => {
+    // The holder is this very test process — guaranteed alive. A long native
+    // download must survive past the 30-minute age threshold.
+    writeAgedLock(process.pid);
+
+    const lock = await tryAcquireUpdateInstallLock({ version: '0.5.0' });
+
+    expect(lock).toBeNull();
+  });
+
+  it('sweeps an aged lock whose holder process is gone', async () => {
+    const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await new Promise((resolve) => child.once('exit', resolve));
+    writeAgedLock(child.pid ?? -1);
 
     const lock = await tryAcquireUpdateInstallLock({ version: '0.5.0' });
 
