@@ -996,6 +996,12 @@ export class AgentTranscriptProjector {
     }));
     const ops: TranscriptOperation[] = [{ op: 'task.upsert', task }];
     if (event.type === 'task.started') {
+      // A mid-run attach backfills this event without the transient spawned:
+      // seed the agent → task association from it so later subagent lifecycle
+      // events fold into this row instead of surfacing an agent-id duplicate.
+      if (info.kind === 'agent' && typeof info.agentId === 'string' && info.agentId.length > 0) {
+        this.subagentTaskIds.set(info.agentId, info.taskId);
+      }
       ops.push({
         op: 'taskref.upsert',
         item: { kind: 'taskref', refId: `ref-${info.taskId}`, taskId: info.taskId, at: nowIso() },

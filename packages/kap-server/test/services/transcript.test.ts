@@ -1106,6 +1106,33 @@ describe('AgentTranscriptProjector', () => {
     expect(tx.getTask('agent-1')).toMatchObject({ kind: 'subagent', state: 'running' });
   });
 
+  it('recovers the agent → task association from a backfilled task.started', () => {
+    const projector = new AgentTranscriptProjector('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: ProjectorBusEvent): void => void tx.apply(projector.map(event));
+
+    // Attached after the transient spawned: only its task lifecycle replays.
+    feed(
+      ev({
+        type: 'task.started',
+        info: {
+          taskId: 'task-9',
+          kind: 'agent',
+          description: 'Inspect files',
+          status: 'running',
+          detached: true,
+          agentId: 'agent-1',
+          startedAt: 1_700_000_000_000,
+          endedAt: null,
+        },
+      }),
+    );
+    feed(ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'done' }));
+
+    expect(tx.getTask('task-9')).toMatchObject({ state: 'completed', resultSummary: 'done' });
+    expect(tx.getTask('agent-1')).toBeUndefined();
+  });
+
   it('projects goal updates into meta.goal plus an inline marker', () => {
     const projector = new AgentTranscriptProjector('main');
     const tx = new AgentTranscript('main');
