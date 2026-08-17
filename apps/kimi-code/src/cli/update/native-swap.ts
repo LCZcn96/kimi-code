@@ -226,6 +226,12 @@ async function cleanupStaleSwapClaims(exePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+  // A stale claim's referenced exe may have been REPLACED by a fresh staged
+  // download of the same version — downloaders deliberately coexist with
+  // claims, and the exe name is version-derived, so the names collide. The
+  // file the CURRENT staged metadata references belongs to that fresh stage,
+  // not to the crashed swap: preserve it.
+  const currentStaged = await readStagedNativeUpdate(exePath).catch(() => null);
   let swapInProgress = false;
   for (const entry of entries) {
     if (!entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)) continue;
@@ -243,7 +249,10 @@ async function cleanupStaleSwapClaims(exePath: string): Promise<boolean> {
         if (typeof exeFileName === 'string' && exeFileName.length > 0) {
           // basename(): the metadata contract is a plain file name — never
           // let a hand-crafted path escape the staging dir.
-          await unlink(join(stagingDir, basename(exeFileName))).catch(() => {});
+          const referenced = basename(exeFileName);
+          if (referenced !== currentStaged?.exeFileName) {
+            await unlink(join(stagingDir, referenced)).catch(() => {});
+          }
         }
       } catch {
         // Unparseable claim file — remove it anyway.

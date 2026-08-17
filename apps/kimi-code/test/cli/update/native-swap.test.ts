@@ -445,6 +445,39 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     ).resolves.toBeDefined();
   });
 
+  it('keeps the exe a fresh staged.json references when sweeping a stale claim', async () => {
+    // A swap crashed after claiming V (stale claim residue), and a downloader
+    // has since re-staged V: both records reference the same version-derived
+    // exe name. Sweeping the claim must not delete the freshly staged exe.
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    const stagingDir = getNativeStagingDir(exePath);
+    const claimPath = join(stagingDir, 'staged.json.swap-4242');
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        version: STAGED_VERSION,
+        target: 'linux-x64',
+        exeFileName: stagedExeFileName(STAGED_VERSION, 'linux'),
+        sha256: 'a'.repeat(64),
+        exeSize: STAGED_EXE_SIZE,
+        stagedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      })}\n`,
+      'utf-8',
+    );
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(claimPath, past, past);
+
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    // The stale claim is swept, the fresh stage survives and is swapped in.
+    await expect(stat(claimPath)).rejects.toThrow();
+    expect(relaunched).toBe(true);
+    expect(calls).toHaveLength(2); // smoke check + re-exec
+    const newExe = await readFile(exePath);
+    expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
+  });
+
   it('stamps the claim with a fresh mtime so a concurrent launch does not misread it as stale', async () => {
     await seedStagedUpdate(exePath, STAGED_VERSION);
     // The metadata may have been staged long before this launch (background

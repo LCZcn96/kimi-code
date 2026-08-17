@@ -80,7 +80,7 @@ function isStaleLockContent(raw: string, now: Date): boolean {
 async function createLockFile(
   filePath: string,
   request: UpdateInstallLockRequest,
-): Promise<UpdateInstallLockHandle> {
+): Promise<UpdateInstallLockHandle | null> {
   const now = request.now ?? new Date();
   const content = `${JSON.stringify({
     version: request.version,
@@ -100,6 +100,10 @@ async function createLockFile(
   } finally {
     await unlink(tempPath).catch(() => {});
   }
+  // A racing stale-takeover may have removed our just-published lock and
+  // published its own; only the survivor may proceed.
+  const published = await readFile(filePath, 'utf-8').catch(() => null);
+  if (published !== content) return null;
 
   return {
     filePath,
@@ -185,18 +189,27 @@ async function acquireTakeoverLock(takeoverPath: string): Promise<boolean> {
 
 /** Create-if-absent publish of a small lock marker file. */
 async function linkLockFile(target: string): Promise<boolean> {
-  const tempPath = `${target}.${process.pid}.${lockTempCounter}.tmp`;
+  // Unique marker content doubles as the ownership identity below.
+  const marker = `${process.pid}.${lockTempCounter}`;
+  const tempPath = `${target}.${marker}.tmp`;
   lockTempCounter += 1;
-  await writeFile(tempPath, String(process.pid), { encoding: 'utf-8', mode: 0o600 });
+  await writeFile(tempPath, marker, { encoding: 'utf-8', mode: 0o600 });
   try {
     await link(tempPath, target);
-    return true;
   } catch (error) {
     if (isAlreadyExists(error)) return false;
     throw error;
   } finally {
     await unlink(tempPath).catch(() => {});
   }
+  // The stale-marker sweep races this publish: it may unlink our fresh marker
+  // and link its own. Verify ownership so only the survivor of that race
+  // proceeds. (A delete landing after this read is the irreducible residual
+  // of pathname-only locking — there is no conditional-delete syscall; its
+  // worst case is a duplicated download cycle, never a corrupt install,
+  // because swap claims guard the executable independently.)
+  const published = await readFile(target, 'utf-8').catch(() => null);
+  return published === marker;
 }
 
 /**
