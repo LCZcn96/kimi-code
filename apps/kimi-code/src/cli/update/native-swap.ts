@@ -11,18 +11,23 @@
  * unaffected), `rename staged→exe`, then delete `.bak` (best effort — a
  * concurrent old instance keeps it locked until it exits). This is the same
  * mechanism install.ps1 already relies on, and the Squirrel/NSIS-style
- * "next launch performs the swap" pattern.
+ * "next launch performs the swap" pattern. Leftovers a swap cannot remove
+ * (its own `.bak` while still running, crash residue in `.staging/`) are
+ * swept best-effort on every launch.
  */
 
 import { spawn } from 'node:child_process';
-import { readdir, rename, rmdir, unlink } from 'node:fs/promises';
+import { readdir, readFile, rename, rmdir, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import { gt } from 'semver';
 
 import { log } from '@moonshot-ai/kimi-code-sdk';
 
-import { KIMI_CODE_UPDATE_REEXEC_ENV } from '#/constant/app';
+import {
+  KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME,
+  KIMI_CODE_UPDATE_REEXEC_ENV,
+} from '#/constant/app';
 
 import { readUpdateInstallState, writeUpdateInstallState } from './install-state';
 import {
@@ -52,6 +57,23 @@ export interface SpawnedChild {
 function isTruthy(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
 }
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT'
+  );
+}
+
+/**
+ * A `staged.json.swap-<pid>` claim file younger than this marks a swap in
+ * progress in another instance; older ones are crash residue. The bound
+ * comfortably exceeds the slowest swap (smoke-check timeout included).
+ */
+const SWAP_CLAIM_STALE_MS = 5 * 60 * 1000;
+
+// First launch of a fresh ~150 MB unsigned exe can sit in an antivirus scan;
+// give Windows extra headroom so a slow scan is not misread as a broken binary.
+const SMOKE_CHECK_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 15_000;
 
 function logSwap(message: string, payload: Record<string, unknown>): void {
   try {
@@ -109,7 +131,7 @@ function smokeCheck(
         // Already gone.
       }
       finish(false);
-    }, 15_000);
+    }, SMOKE_CHECK_TIMEOUT_MS);
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf-8');
     });
@@ -160,7 +182,7 @@ async function rollback(bakPath: string, exePath: string): Promise<void> {
  * A `.bak` still mapped by a running old instance cannot be deleted on
  * Windows — it is simply left for a later launch.
  */
-async function cleanupBackups(exePath: string, keepPath: string): Promise<void> {
+async function cleanupBackups(exePath: string, keepPath?: string): Promise<void> {
   const dir = dirname(exePath);
   const base = basename(exePath);
   let entries: string[];
@@ -174,6 +196,67 @@ async function cleanupBackups(exePath: string, keepPath: string): Promise<void> 
     const full = join(dir, entry);
     if (full === keepPath) continue;
     await unlink(full).catch(() => {});
+  }
+}
+
+/**
+ * Prune `staged.json.swap-<pid>` claim files left by instances that died
+ * mid-swap, together with the staged exe they reference (re-downloaded on the
+ * next update cycle if still wanted). Returns true when a FRESH claim file
+ * was seen — i.e. another instance is swapping right now.
+ */
+async function cleanupStaleSwapClaims(exePath: string): Promise<boolean> {
+  const stagingDir = getNativeStagingDir(exePath);
+  let entries: string[];
+  try {
+    entries = await readdir(stagingDir);
+  } catch {
+    return false;
+  }
+  let swapInProgress = false;
+  for (const entry of entries) {
+    if (!entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)) continue;
+    const full = join(stagingDir, entry);
+    const info = await stat(full).catch(() => null);
+    if (info === null) continue;
+    if (Date.now() - info.mtimeMs < SWAP_CLAIM_STALE_MS) {
+      swapInProgress = true;
+      continue;
+    }
+    const raw = await readFile(full, 'utf-8').catch(() => null);
+    if (raw !== null) {
+      try {
+        const exeFileName: unknown = (JSON.parse(raw) as { exeFileName?: unknown }).exeFileName;
+        if (typeof exeFileName === 'string' && exeFileName.length > 0) {
+          // basename(): the metadata contract is a plain file name — never
+          // let a hand-crafted path escape the staging dir.
+          await unlink(join(stagingDir, basename(exeFileName))).catch(() => {});
+        }
+      } catch {
+        // Unparseable claim file — remove it anyway.
+      }
+    }
+    await unlink(full).catch(() => {});
+  }
+  return swapInProgress;
+}
+
+/**
+ * Best-effort startup hygiene for update leftovers, run on every native
+ * launch. The swap itself can never fully clean up after its own run — the
+ * old process still holds its renamed image (`.bak`) on Windows — so later
+ * launches sweep what the previous run could not.
+ */
+async function sweepStaleNativeUpdateArtifacts(exePath: string): Promise<void> {
+  try {
+    if (await cleanupStaleSwapClaims(exePath)) {
+      // Another instance is mid-swap: leave every artifact alone — the `.bak`
+      // next to the exe is its rollback source.
+      return;
+    }
+    await cleanupBackups(exePath);
+  } catch {
+    // Hygiene must never affect startup.
   }
 }
 
@@ -220,8 +303,14 @@ function reexec(
 export async function maybeRelaunchWithStagedNativeUpdate(
   deps: NativeSwapDeps,
 ): Promise<boolean> {
-  if (isTruthy(deps.env[KIMI_CODE_UPDATE_REEXEC_ENV])) return false;
   if (!deps.isNative) return false;
+  await sweepStaleNativeUpdateArtifacts(deps.exePath);
+  if (isTruthy(deps.env[KIMI_CODE_UPDATE_REEXEC_ENV])) {
+    // Read-once guard: drop it so this session's children (and any nested
+    // kimi launches from them) do not inherit the swap skip.
+    delete deps.env[KIMI_CODE_UPDATE_REEXEC_ENV];
+    return false;
+  }
 
   const claimed = await claimStagedUpdate(deps.exePath);
   if (claimed === null) return false;
@@ -267,22 +356,24 @@ export async function maybeRelaunchWithStagedNativeUpdate(
   //    rename is atomic, the window is two adjacent syscalls, and recovery is
   //    `mv <exe>.bak <exe>` or re-running the install script.
   let bakPath = `${deps.exePath}.bak`;
-  const oldBakCleared = await unlink(bakPath)
-    .then(() => true)
-    .catch(() => false);
-  if (!oldBakCleared) {
-    // The leftover `.bak` is locked by a still-running old instance (or
-    // undeletable for another reason) — take a unique backup name, the same
-    // fallback install.ps1 uses. It is best-effort cleaned up on later runs.
-    bakPath = `${deps.exePath}.${process.pid}.bak`;
+  try {
+    await unlink(bakPath);
+  } catch (error) {
+    if (!isNotFound(error)) {
+      // The leftover `.bak` is locked by a still-running old instance (or
+      // undeletable for another reason) — take a unique backup name, the same
+      // fallback install.ps1 uses. It is best-effort cleaned up on later runs.
+      bakPath = `${deps.exePath}.${process.pid}.bak`;
+    }
   }
   try {
     await rename(deps.exePath, bakPath);
   } catch (error) {
-    // Nothing was moved: startup continues with the old exe. Keep the staged
-    // files so a later launch can retry (transient locks clear on reboot).
+    // Nothing was moved: startup continues with the old exe. Restore the
+    // claimed metadata so a later launch retries the swap (transient locks
+    // clear on reboot) instead of silently dropping the staged update.
     logSwap('failed to move exe aside', { exePath: deps.exePath, error: String(error) });
-    await unlink(claimedPath).catch(() => {});
+    await rename(claimedPath, getNativeStagedStateFile(deps.exePath)).catch(() => {});
     return false;
   }
 
