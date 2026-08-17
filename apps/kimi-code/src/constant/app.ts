@@ -91,7 +91,8 @@ export const KIMI_CODE_CDN_LATEST_URL = `${KIMI_CODE_CDN_BASE}/latest`;
 // bodies, and the CDN install scripts read it for fresh installs.
 export const KIMI_CODE_CDN_LATEST_JSON_URL = `${KIMI_CODE_CDN_BASE}/latest.json`;
 // Per-release native artifacts: `/binaries/<version>/manifest.json` +
-// `/binaries/<version>/kimi-code-<target>.zip` (same layout install.ps1 uses).
+// `/binaries/<version>/kimi-code-<target>[.exe]` — the bare platform binary
+// (same layout install.ps1 consumes).
 export const KIMI_CODE_CDN_BINARIES_BASE = `${KIMI_CODE_CDN_BASE}/binaries`;
 export const KIMI_CODE_TIPS_BANNER_URL = 'https://cdn.kimi.com/kimi-code-tips/tips.json';
 // The marketplace catalog location constants live in the shared

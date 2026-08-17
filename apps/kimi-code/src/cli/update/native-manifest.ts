@@ -1,9 +1,10 @@
 /**
  * Per-release native artifact manifest (`/binaries/<version>/manifest.json`).
  *
- * Produced by `scripts/native/produce-manifest.mjs` and consumed by the
- * install scripts; the staged updater reuses the same file so checksums and
- * file names have a single source of truth.
+ * Published alongside the release and consumed by the install scripts; the
+ * staged updater reuses the same file so checksums and file names have a
+ * single source of truth. Entries point at the bare platform binary
+ * (`kimi-code-<target>[.exe]`), not an archive.
  */
 
 import { valid } from 'semver';

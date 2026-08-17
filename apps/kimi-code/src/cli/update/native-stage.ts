@@ -1,15 +1,15 @@
 /**
- * Native staged update: download + verify + unpack into `<exe dir>/.staging/`,
+ * Native staged update: download + verify into `<exe dir>/.staging/`,
  * without touching the running executable. The actual swap happens on the
  * next startup (see `native-swap.ts`).
  *
- * Trust chain: the zip's sha256 comes from the per-release manifest (served
- * over HTTPS), and the unpacked exe is re-checked against the zip entry's
- * crc32, so a staged binary is byte-exact what the release pipeline produced.
+ * The CDN serves the bare platform binary (e.g. `kimi-code-win32-x64.exe`),
+ * whose sha256 comes from the per-release manifest over HTTPS — a staged
+ * binary is byte-exact what the release pipeline produced.
  */
 
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, rm, rmdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm, rmdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { z } from 'zod';
@@ -22,7 +22,6 @@ import {
   nativeBinaryUrl,
   selectPlatformEntry,
 } from './native-manifest';
-import { unzipFirstFile } from './unzip';
 
 const StagedNativeUpdateSchema = z
   .object({
@@ -30,7 +29,7 @@ const StagedNativeUpdateSchema = z
     target: z.string().min(1),
     /** Base name of the staged executable inside `.staging/`. */
     exeFileName: z.string().min(1),
-    /** sha256 of the zip the exe was unpacked from. */
+    /** sha256 of the staged binary (the manifest's checksum). */
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     exeSize: z.number().int().min(1),
     stagedAt: z.string().min(1),
@@ -117,16 +116,18 @@ async function downloadAndHash(
   partPath: string,
   expectedSha256: string,
   fetchImpl: typeof fetch,
-): Promise<void> {
+): Promise<number> {
   const response = await fetchImpl(url);
   if (!response.ok || response.body === null) {
     throw new Error(`native binary download returned HTTP ${response.status}`);
   }
   const hash = createHash('sha256');
+  let size = 0;
   const file = await open(partPath, 'w');
   try {
     for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
       hash.update(chunk);
+      size += chunk.length;
       await file.write(chunk);
     }
   } finally {
@@ -136,10 +137,11 @@ async function downloadAndHash(
   if (digest !== expectedSha256) {
     throw new Error(`sha256 mismatch: expected ${expectedSha256}, got ${digest}`);
   }
+  return size;
 }
 
 /**
- * Download + verify + unpack `version` next to the running executable.
+ * Download + verify `version` next to the running executable.
  *
  * Short-circuits with `already-staged` when the same version is ready on
  * disk (repeat `kimi upgrade`, or foreground/background overlap). **Throws**
@@ -177,24 +179,23 @@ export async function stageNativeUpdate(
     stagedAt: new Date().toISOString(),
   };
 
+  const partPath = join(stagingDir, `${exeFileName}.part`);
   try {
     const manifest = await fetchNativeReleaseManifest(options.version, fetchImpl);
     const entry = selectPlatformEntry(manifest, platform, arch);
-    const partPath = join(stagingDir, `${entry.filename}.part`);
     options.stdout?.write(`Downloading Kimi Code ${options.version} (${target})…\n`);
-    await downloadAndHash(
+    const size = await downloadAndHash(
       nativeBinaryUrl(options.version, entry.filename),
       partPath,
       entry.checksum,
       fetchImpl,
     );
-    options.stdout?.write('Verifying and unpacking…\n');
-    const { data } = unzipFirstFile(await readFile(partPath));
-    await writeFile(stagedExePath(options.exePath, staged), data, { mode: 0o755 });
-    await rm(partPath, { force: true });
+    // sha256 matched the manifest: promote the download to the staged exe.
+    await rename(partPath, stagedExePath(options.exePath, staged));
+    await chmod(stagedExePath(options.exePath, staged), 0o755);
 
     staged.sha256 = entry.checksum;
-    staged.exeSize = data.length;
+    staged.exeSize = size;
     // Atomic write: staged.json only ever appears complete and consistent.
     await writeJsonFile(
       getNativeStagedStateFile(options.exePath),
@@ -203,6 +204,7 @@ export async function stageNativeUpdate(
     );
     return { status: 'staged', staged };
   } catch (error) {
+    await rm(partPath, { force: true }).catch(() => {});
     await removeStagedNativeUpdate(options.exePath);
     throw error;
   }
