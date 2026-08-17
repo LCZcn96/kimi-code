@@ -986,6 +986,13 @@ export class AgentTranscriptProjector {
       outputTail: prev?.outputTail ?? '',
       startedAt: prev?.startedAt ?? epochMsToIso(info.startedAt),
       endedAt: info.endedAt === null ? prev?.endedAt : epochMsToIso(info.endedAt),
+      // task.upsert replaces the row wholesale: a subagent.completed/failed
+      // folded into this row earlier (background Agent run, see
+      // onSubagentSpawned) would otherwise lose its result details here.
+      resultSummary: prev?.resultSummary,
+      usage: prev?.usage,
+      error: prev?.error,
+      stateReason: prev?.stateReason,
     }));
     const ops: TranscriptOperation[] = [{ op: 'task.upsert', task }];
     if (event.type === 'task.started') {
@@ -1140,6 +1147,12 @@ export class AgentTranscriptProjector {
     const taskKey = event.taskId ?? event.subagentId;
     if (event.taskId !== undefined) {
       this.subagentTaskIds.set(event.subagentId, event.taskId);
+    } else {
+      // A taskless (re)spawn — e.g. the same child resumed through AgentSwarm —
+      // must not route its lifecycle into a stale Agent-task row from a
+      // previous registration: drop the old mapping so this run keys by agent
+      // id end to end.
+      this.subagentTaskIds.delete(event.subagentId);
     }
     const task = this.upsertTask(taskKey, (prev) => ({
       taskId: taskKey,

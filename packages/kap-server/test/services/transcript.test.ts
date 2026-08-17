@@ -1046,6 +1046,21 @@ describe('AgentTranscriptProjector', () => {
       }),
     );
     feed(ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'done' }));
+    feed(
+      ev({
+        type: 'task.terminated',
+        info: {
+          taskId: 'task-9',
+          kind: 'agent',
+          description: 'Inspect files',
+          status: 'completed',
+          detached: true,
+          agentId: 'agent-1',
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_001_000,
+        },
+      }),
+    );
 
     expect(tx.getTask('task-9')).toMatchObject({
       kind: 'subagent',
@@ -1056,6 +1071,39 @@ describe('AgentTranscriptProjector', () => {
       resultSummary: 'done',
     });
     expect(tx.getTask('agent-1')).toBeUndefined();
+  });
+
+  it('drops the stale task mapping when a child respawns without a task id', () => {
+    const projector = new AgentTranscriptProjector('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: ProjectorBusEvent): void => void tx.apply(projector.map(event));
+
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        subagentId: 'agent-1',
+        subagentName: 'explore',
+        parentToolCallId: 'call-1',
+        description: 'Inspect files',
+        runInBackground: true,
+        taskId: 'task-9',
+      }),
+    );
+    feed(ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'done' }));
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        subagentId: 'agent-1',
+        subagentName: 'worker',
+        parentToolCallId: 'call-2',
+        description: 'scan again',
+        runInBackground: false,
+      }),
+    );
+    feed(ev({ type: 'subagent.started', subagentId: 'agent-1' }));
+
+    expect(tx.getTask('task-9')).toMatchObject({ state: 'completed', resultSummary: 'done' });
+    expect(tx.getTask('agent-1')).toMatchObject({ kind: 'subagent', state: 'running' });
   });
 
   it('projects goal updates into meta.goal plus an inline marker', () => {
