@@ -1,9 +1,12 @@
-import { mkdir, open, readFile, unlink } from 'node:fs/promises';
+import { link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { getUpdateInstallLockFile } from '#/utils/paths';
 
 const UPDATE_INSTALL_LOCK_STALE_MS = 30 * 60 * 1000;
+
+/** Uniquifies the publish-temp path across concurrent in-process acquirers. */
+let lockTempCounter = 0;
 
 export interface UpdateInstallLockRequest {
   readonly version: string;
@@ -70,15 +73,23 @@ async function createLockFile(
   request: UpdateInstallLockRequest,
 ): Promise<UpdateInstallLockHandle> {
   const now = request.now ?? new Date();
-  const file = await open(filePath, 'wx', 0o600);
+  const content = `${JSON.stringify({
+    version: request.version,
+    pid: process.pid,
+    startedAt: now.toISOString(),
+  }, null, 2)}\n`;
+  // Publish atomically: hard-link a fully-written temp file into place (link
+  // fails when the destination already exists, same exclusivity as 'wx'). A
+  // plain 'wx' open would expose a momentarily EMPTY lock file, and a
+  // concurrent acquirer could misread it as corrupt, sweep it, and also win —
+  // two "holders" then write the same `.staging` paths.
+  const tempPath = `${filePath}.${process.pid}.${lockTempCounter}.tmp`;
+  lockTempCounter += 1;
+  await writeFile(tempPath, content, { encoding: 'utf-8', mode: 0o600 });
   try {
-    await file.writeFile(`${JSON.stringify({
-      version: request.version,
-      pid: process.pid,
-      startedAt: now.toISOString(),
-    }, null, 2)}\n`, 'utf-8');
+    await link(tempPath, filePath);
   } finally {
-    await file.close();
+    await unlink(tempPath).catch(() => {});
   }
 
   return {

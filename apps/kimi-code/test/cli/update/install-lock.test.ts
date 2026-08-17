@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -36,6 +36,22 @@ describe('update install lock', () => {
     const third = await tryAcquireUpdateInstallLock({ version: '0.5.0' });
     expect(third).not.toBeNull();
     await third?.release();
+  });
+
+  it('grants the lock to exactly one of many concurrent acquirers', async () => {
+    // The lock file must never be observable in an empty/partial state:
+    // losers of the create race used to sweep the just-created (still empty)
+    // lock as "corrupt" and also win, breaking exclusivity.
+    const attempts = await Promise.all(
+      Array.from({ length: 20 }, () => tryAcquireUpdateInstallLock({ version: '0.5.0' })),
+    );
+    const winners = attempts.filter((handle) => handle !== null);
+    expect(winners).toHaveLength(1);
+    const held = JSON.parse(readFileSync(getUpdateInstallLockFile(), 'utf-8')) as {
+      version: string;
+    };
+    expect(held.version).toBe('0.5.0');
+    await winners[0]?.release();
   });
 
   it('recovers from a corrupt lock file', async () => {
