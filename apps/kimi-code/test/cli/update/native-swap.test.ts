@@ -1,11 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readUpdateInstallState } from '#/cli/update/install-state';
-import { stagedExeFileName } from '#/cli/update/native-stage';
+import { readStagedNativeUpdate, stagedExeFileName } from '#/cli/update/native-stage';
 import {
   maybeRelaunchWithStagedNativeUpdate,
   type NativeSwapDeps,
@@ -141,11 +141,14 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
   it('does nothing when the re-exec guard env is set', async () => {
     await seedStagedUpdate(exePath, STAGED_VERSION);
     const { calls, spawnImpl } = createSpawnMock({});
+    const env = { [KIMI_CODE_UPDATE_REEXEC_ENV]: '1' };
     const relaunched = await maybeRelaunchWithStagedNativeUpdate(
-      makeDeps(exePath, { spawnImpl, env: { [KIMI_CODE_UPDATE_REEXEC_ENV]: '1' } }),
+      makeDeps(exePath, { spawnImpl, env }),
     );
     expect(relaunched).toBe(false);
     expect(calls).toHaveLength(0);
+    // Read-once: the guard is dropped so children of this session do not inherit it.
+    expect(env[KIMI_CODE_UPDATE_REEXEC_ENV]).toBeUndefined();
     // Staged files untouched for the "real" next launch.
     await expect(stat(getNativeStagedStateFile(exePath))).resolves.toBeDefined();
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
@@ -256,5 +259,100 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     // The binary on disk is already the new version; the next launch picks it up.
     const newExe = await readFile(exePath);
     expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
+  });
+
+  it('restores the staged metadata when the exe cannot be moved aside', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    // rename(exe → bak) fails when the in-service exe is gone.
+    await rm(exePath);
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    // The staged update is restored, not dropped: a later launch retries the swap.
+    const restored = await readStagedNativeUpdate(exePath);
+    expect(restored).toMatchObject({ version: STAGED_VERSION });
+    await expect(
+      stat(join(getNativeStagingDir(exePath), stagedExeFileName(STAGED_VERSION, 'linux'))),
+    ).resolves.toBeDefined();
+  });
+
+  it('falls back to a pid-named backup when the plain .bak cannot be removed', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    // A directory at `${exePath}.bak` cannot be removed via unlink → pid fallback.
+    await mkdir(`${exePath}.bak`);
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(true);
+    expect(calls).toHaveLength(2);
+    const newExe = await readFile(exePath);
+    expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
+    // The pid-named backup was cleaned after the swap; the directory is untouched.
+    const names = await readdir(join(workDir, 'bin'));
+    expect(names.toSorted()).toEqual(['kimi', 'kimi.bak']);
+    expect((await stat(`${exePath}.bak`)).isDirectory()).toBe(true);
+  });
+
+  it('sweeps stale backups from earlier swaps on startup', async () => {
+    await writeFile(`${exePath}.bak`, 'stale-backup');
+    await writeFile(`${exePath}.12345.bak`, 'stale-backup');
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
+    await expect(stat(`${exePath}.bak`)).rejects.toThrow();
+    await expect(stat(`${exePath}.12345.bak`)).rejects.toThrow();
+  });
+
+  it('leaves every artifact alone while another instance holds a fresh swap claim', async () => {
+    const stagingDir = getNativeStagingDir(exePath);
+    await mkdir(stagingDir, { recursive: true });
+    const claimPath = join(stagingDir, 'staged.json.swap-4242');
+    await writeFile(claimPath, '{}\n', 'utf-8');
+    await writeFile(`${exePath}.bak`, 'in-use-backup');
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    // A mid-swap instance owns these: nothing is touched.
+    await expect(stat(claimPath)).resolves.toBeDefined();
+    await expect(stat(`${exePath}.bak`)).resolves.toBeDefined();
+  });
+
+  it('cleans up stale swap claims and their orphaned staged exe', async () => {
+    const stagingDir = getNativeStagingDir(exePath);
+    await mkdir(stagingDir, { recursive: true });
+    const exeFileName = stagedExeFileName(STAGED_VERSION, 'linux');
+    const orphanedExe = join(stagingDir, exeFileName);
+    await writeFile(orphanedExe, Buffer.alloc(STAGED_EXE_SIZE, 1));
+    const claimPath = join(stagingDir, 'staged.json.swap-4242');
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        version: STAGED_VERSION,
+        target: 'linux-x64',
+        exeFileName,
+        sha256: 'a'.repeat(64),
+        exeSize: STAGED_EXE_SIZE,
+        stagedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      }, null, 2)}\n`,
+      'utf-8',
+    );
+    // Crash residue: the claim is older than the stale window.
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(claimPath, past, past);
+
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    await expect(stat(claimPath)).rejects.toThrow();
+    await expect(stat(orphanedExe)).rejects.toThrow();
   });
 });
