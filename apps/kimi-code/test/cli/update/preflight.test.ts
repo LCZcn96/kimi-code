@@ -700,6 +700,71 @@ describe('runUpdatePreflight', () => {
     }
   });
 
+  it('native: retries the background install when an old active record has no live lock', async () => {
+    // Orphaned `active`: older than the spawn grace window and the lock is
+    // free (beforeEach default) ⇒ the previous downloader is gone; retry.
+    mocks.readUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    mocks.readUpdateInstallState.mockResolvedValue(installState({
+      active: {
+        version: '0.5.0',
+        source: 'native',
+        startedAt: new Date(Date.now() - 120_000).toISOString(),
+      },
+    }));
+    mocks.refreshUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    mocks.detectInstallSource.mockResolvedValue('native');
+    mockSpawnExit(0);
+    const { options } = captureOutput();
+
+    await expect(runUpdatePreflight('0.4.0', options)).resolves.toBe('continue');
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      process.execPath,
+      ['__update_download', '0.5.0'],
+      expect.objectContaining({ detached: true, stdio: 'ignore' }),
+    );
+  });
+
+  it('native: does not re-spawn while the install lock is genuinely held', async () => {
+    mocks.readUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    mocks.readUpdateInstallState.mockResolvedValue(installState({
+      active: {
+        version: '0.5.0',
+        source: 'native',
+        startedAt: new Date(Date.now() - 120_000).toISOString(),
+      },
+    }));
+    mocks.refreshUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    mocks.detectInstallSource.mockResolvedValue('native');
+    // Lock probe fails ⇒ a downloader is actually in flight; trust it.
+    mocks.tryAcquireUpdateInstallLock.mockResolvedValue(null);
+    mockSpawnExit(0);
+    const { options } = captureOutput();
+
+    await expect(runUpdatePreflight('0.4.0', options)).resolves.toBe('continue');
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('native: trusts a fresh active record within the spawn grace window', async () => {
+    mocks.readUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    mocks.readUpdateInstallState.mockResolvedValue(installState({
+      active: {
+        version: '0.5.0',
+        source: 'native',
+        startedAt: new Date().toISOString(),
+      },
+    }));
+    mocks.refreshUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    mocks.detectInstallSource.mockResolvedValue('native');
+    mockSpawnExit(0);
+    const { options } = captureOutput();
+
+    await expect(runUpdatePreflight('0.4.0', options)).resolves.toBe('continue');
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    // Inside the grace window the lock is never probed — the freshly spawned
+    // worker may simply not have reached its self-acquire yet.
+    expect(mocks.tryAcquireUpdateInstallLock).not.toHaveBeenCalled();
+  });
+
   it('tracks and logs successful background update installs', async () => {
     mocks.readUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
     mocks.readUpdateInstallState.mockResolvedValue(installState());

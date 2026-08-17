@@ -384,6 +384,44 @@ function hasFreshActiveInstall(state: UpdateInstallState, target: UpdateTarget):
   return Date.now() - startedAt < AUTO_INSTALL_ACTIVE_TTL_MS;
 }
 
+/**
+ * A fresh-looking `active` record is not proof of work for native installs:
+ * the parent that wrote it may have exited before the spawned downloader's
+ * exit event (or the downloader died before doing anything), and the 6 h TTL
+ * would then silently block every retry. Past the spawn grace window — the
+ * worker needs a moment to self-acquire the lock — lock liveness IS the
+ * truth: held ⇒ a download is running; free ⇒ the record is an orphan and
+ * the caller may start a new attempt. Package-manager sources have no such
+ * liveness signal and keep the TTL behavior above.
+ */
+const NATIVE_INSTALL_SPAWN_GRACE_MS = 60_000;
+
+async function hasNativeInstallInFlight(
+  state: UpdateInstallState,
+  target: UpdateTarget,
+): Promise<boolean> {
+  const active = state.active;
+  if (active === null || active.version !== target.version) return false;
+  const startedAt = Date.parse(active.startedAt);
+  if (Number.isFinite(startedAt) && Date.now() - startedAt < NATIVE_INSTALL_SPAWN_GRACE_MS) {
+    return true;
+  }
+  const probe = await tryAcquireUpdateInstallLock({ version: target.version });
+  if (probe === null) return true;
+  await probe.release().catch(() => {});
+  return false;
+}
+
+async function hasInstallInFlight(
+  source: InstallSource,
+  state: UpdateInstallState,
+  target: UpdateTarget,
+): Promise<boolean> {
+  return source === 'native'
+    ? hasNativeInstallInFlight(state, target)
+    : hasFreshActiveInstall(state, target);
+}
+
 async function showPendingBackgroundInstallNotice(
   state: UpdateInstallState,
   currentVersion: string,
@@ -582,7 +620,7 @@ async function startBackgroundInstall(
   try {
     const freshState = await readUpdateInstallState().catch(() => state);
     if (
-      hasFreshActiveInstall(freshState, target) ||
+      (await hasInstallInFlight(source, freshState, target)) ||
       failureAttemptsFor(freshState, target) >= AUTO_INSTALL_FAILURE_PROMPT_THRESHOLD
     ) {
       return;
@@ -701,7 +739,7 @@ async function tryStartAutomaticBackgroundInstall(
   if (failureAttemptsFor(installState, target) >= AUTO_INSTALL_FAILURE_PROMPT_THRESHOLD) {
     return false;
   }
-  if (!hasFreshActiveInstall(installState, target)) {
+  if (!(await hasInstallInFlight(source, installState, target))) {
     await startBackgroundInstall(
       installState,
       currentVersion,
