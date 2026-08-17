@@ -12,22 +12,54 @@ import {
   readUpdateInstallLockVersion,
   tryAcquireUpdateInstallLock,
 } from '#/cli/update/install-lock';
-import { stageNativeUpdate } from '#/cli/update/native-stage';
+import { readStagedNativeUpdate, stageNativeUpdate } from '#/cli/update/native-stage';
 import { detectNativeInstall } from '#/cli/update/source';
+
+const LOCK_HELD_POLL_INTERVAL_MS = 2_000;
+
+/**
+ * Another worker holds the install lock for the SAME version. Returning right
+ * away would report a success that has not happened yet — the in-flight
+ * download may still fail — so wait for it: resolves true once its staged
+ * update is verified on disk, false when the holder finished without staging
+ * (the caller then takes over the download itself).
+ */
+async function waitForStagedUpdate(version: string, exePath: string): Promise<boolean> {
+  for (;;) {
+    const staged = await readStagedNativeUpdate(exePath);
+    if (staged !== null && staged.version === version) return true;
+    // staged.json lands before the holder releases its lock, so a lock that
+    // is gone (or changed hands) with nothing staged means the holder failed.
+    const holderVersion = await readUpdateInstallLockVersion();
+    if (holderVersion !== version) return false;
+    await new Promise((resolve) => {
+      setTimeout(resolve, LOCK_HELD_POLL_INTERVAL_MS);
+    });
+  }
+}
 
 export async function runUpdateDownloadCommand(version: string): Promise<number> {
   if (!detectNativeInstall()) {
     process.stderr.write('error: update download is only available in the native build\n');
     return 1;
   }
+  const out = process.stdout;
   let lock = await tryAcquireUpdateInstallLock({ version });
   if (lock === null) {
-    // Another instance holds the lock. Same target version → its outcome is
-    // ours, exit quietly. A different version (or a lock that vanished
-    // between acquire and read) must not surface as a successful download.
     const holderVersion = await readUpdateInstallLockVersion();
-    if (holderVersion === version) return 0;
-    if (holderVersion === undefined) {
+    if (holderVersion === version) {
+      // Another worker is already downloading this exact version: wait for it
+      // and adopt its verified result instead of exiting on a maybe.
+      out.write(
+        `A download of Kimi Code ${version} is already in progress; waiting for it to finish…\n`,
+      );
+      if (await waitForStagedUpdate(version, process.execPath)) {
+        out.write(`Kimi Code ${version} is downloaded; it applies on the next start.\n`);
+        return 0;
+      }
+      // The holder finished without staging (failed or crashed): take over.
+      lock = await tryAcquireUpdateInstallLock({ version });
+    } else if (holderVersion === undefined) {
       // The lock was released between the two reads — retry the acquire once.
       lock = await tryAcquireUpdateInstallLock({ version });
     }
@@ -38,7 +70,6 @@ export async function runUpdateDownloadCommand(version: string): Promise<number>
       return 1;
     }
   }
-  const out = process.stdout;
   const label = `Downloading Kimi Code ${version} (${process.platform}-${process.arch})…`;
   const onProgress = createDownloadProgress(out, label);
   try {

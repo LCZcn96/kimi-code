@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   tryAcquireUpdateInstallLock: vi.fn(),
   readUpdateInstallLockVersion: vi.fn(),
   stageNativeUpdate: vi.fn(),
+  readStagedNativeUpdate: vi.fn(),
 }));
 
 vi.mock('#/cli/update/source', () => ({
@@ -20,6 +21,7 @@ vi.mock('#/cli/update/install-lock', () => ({
 
 vi.mock('#/cli/update/native-stage', () => ({
   stageNativeUpdate: mocks.stageNativeUpdate,
+  readStagedNativeUpdate: mocks.readStagedNativeUpdate,
 }));
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
@@ -114,11 +116,31 @@ describe('runUpdateDownloadCommand', () => {
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('native build'));
   });
 
-  it('exits quietly when another instance is staging the same version', async () => {
+  it('waits for and adopts the result when another instance downloads the same version', async () => {
     mocks.tryAcquireUpdateInstallLock.mockResolvedValue(null);
     mocks.readUpdateInstallLockVersion.mockResolvedValue('0.7.0');
+    // The other worker's staged update is verified on disk on the first poll.
+    mocks.readStagedNativeUpdate.mockResolvedValue({ version: '0.7.0' });
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     await expect(runUpdateDownloadCommand('0.7.0')).resolves.toBe(0);
     expect(mocks.stageNativeUpdate).not.toHaveBeenCalled();
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('already in progress'));
+  });
+
+  it('takes over when the same-version holder finishes without staging', async () => {
+    const release = vi.fn(async () => {});
+    mocks.tryAcquireUpdateInstallLock
+      .mockResolvedValueOnce(null) // held by the other worker…
+      .mockResolvedValueOnce({ filePath: '/tmp/install.lock', release }); // …then ours
+    mocks.readUpdateInstallLockVersion
+      .mockResolvedValueOnce('0.7.0') // the initial holder check
+      .mockResolvedValueOnce(undefined); // inside the wait: lock released, nothing staged
+    mocks.readStagedNativeUpdate.mockResolvedValue(null);
+    await expect(runUpdateDownloadCommand('0.7.0')).resolves.toBe(0);
+    expect(mocks.stageNativeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ version: '0.7.0' }),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('fails instead of a false success when the lock holder stages another version', async () => {

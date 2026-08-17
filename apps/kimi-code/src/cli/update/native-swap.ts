@@ -174,8 +174,13 @@ async function claimStagedUpdate(exePath: string): Promise<ClaimedStaged | null>
   return { staged, claimedPath };
 }
 
-async function rollback(bakPath: string, exePath: string): Promise<void> {
-  await rename(bakPath, exePath).catch(() => {});
+async function rollback(bakPath: string, exePath: string): Promise<boolean> {
+  try {
+    await rename(bakPath, exePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -402,7 +407,19 @@ export async function maybeRelaunchWithStagedNativeUpdate(
   // 3. Move the staged exe into place; roll back on failure.
   if ((await rename(stagedExe, deps.exePath).catch(() => null)) === null) {
     logSwap('failed to move staged exe into place, rolling back', { exePath: deps.exePath });
-    await rollback(bakPath, deps.exePath);
+    if (!(await rollback(bakPath, deps.exePath))) {
+      // Rollback failed too (transient file lock, AV, …): the install path is
+      // now absent and no next launch can start. Keep every artifact instead
+      // of discarding — the `.bak` IS the old exe and the staged payload is a
+      // second recovery copy, so `mv <exe>.bak <exe>` or re-running the
+      // installer still recovers.
+      logSwap('rollback failed, keeping recovery artifacts', {
+        exePath: deps.exePath,
+        bakPath,
+      });
+      await recordSwapFailure(staged.version);
+      return false;
+    }
     await recordSwapFailure(staged.version);
     return discard();
   }

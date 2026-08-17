@@ -13,6 +13,27 @@ import {
 import { KIMI_CODE_UPDATE_REEXEC_ENV } from '#/constant/app';
 import { getNativeStagedStateFile, getNativeStagingDir } from '#/utils/paths';
 
+const fsMocks = vi.hoisted(() => ({
+  /** When set, renames matching the predicate fail with an injected error. */
+  renameBlocker: null as null | ((src: string, dst: string) => boolean),
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rename: async (
+      src: Parameters<typeof actual.rename>[0],
+      dst: Parameters<typeof actual.rename>[1],
+    ) => {
+      if (fsMocks.renameBlocker?.(String(src), String(dst)) === true) {
+        throw new Error('injected rename failure');
+      }
+      return actual.rename(src, dst);
+    },
+  };
+});
+
 const CURRENT_VERSION = '0.6.0';
 const STAGED_VERSION = '0.7.0';
 const STAGED_EXE_SIZE = 42;
@@ -139,6 +160,7 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     await mkdir(join(workDir, 'bin'), { recursive: true });
     await writeFile(exePath, 'old-binary');
     vi.stubEnv('KIMI_CODE_HOME', homeDir);
+    fsMocks.renameBlocker = null;
   });
 
   afterEach(async () => {
@@ -396,5 +418,29 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(calls).toHaveLength(0);
     await expect(stat(claimPath)).rejects.toThrow();
     await expect(stat(orphanedExe)).rejects.toThrow();
+  });
+
+  it('keeps recovery artifacts when both the swap-in rename and the rollback fail', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    // Every rename INTO the install path fails: the staged exe cannot move
+    // in, and the backup cannot move back (transient lock, AV, …).
+    fsMocks.renameBlocker = (_src, dst) => dst === exePath;
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(1); // smoke check only, no re-exec
+    // The install path stays absent, but both recovery copies survive: the
+    // `.bak` IS the old exe, and the staged payload plus its claim are not
+    // discarded.
+    await expect(stat(exePath)).rejects.toThrow();
+    expect(await readFile(`${exePath}.bak`, 'utf-8')).toBe('old-binary');
+    const stagingDir = getNativeStagingDir(exePath);
+    await expect(
+      stat(join(stagingDir, stagedExeFileName(STAGED_VERSION, 'linux'))),
+    ).resolves.toBeDefined();
+    await expect(
+      stat(join(stagingDir, `staged.json.swap-${process.pid}`)),
+    ).resolves.toBeDefined();
   });
 });
