@@ -23,9 +23,10 @@ interface FakeChildHandlers {
 }
 
 function fakeChild(options: {
-  readonly code?: number;
+  readonly code?: number | null;
   readonly stdout?: string;
   readonly error?: Error;
+  readonly signal?: NodeJS.Signals | null;
 }): FakeChildHandlers {
   const listeners = new Map<string, (...args: unknown[]) => void>();
   const stdoutChunks: string[] = [];
@@ -49,9 +50,11 @@ function fakeChild(options: {
     if (options.stdout !== undefined) {
       for (const cb of stdoutListeners) cb(Buffer.from(options.stdout));
     }
+    const code = options.code === undefined ? 0 : options.code;
+    const signal = options.signal ?? null;
     // The smoke check listens on 'close', the re-exec waiter on 'exit'.
-    listeners.get('close')?.(options.code ?? 0, null);
-    listeners.get('exit')?.(options.code ?? 0, null);
+    listeners.get('close')?.(code, signal);
+    listeners.get('exit')?.(code, signal);
   });
   void stdoutChunks;
   return { onEvent: () => {}, child };
@@ -68,6 +71,7 @@ function createSpawnMock(routes: {
   readonly smokeStdout?: string;
   readonly reexecCode?: number;
   readonly reexecError?: Error;
+  readonly reexecSignal?: NodeJS.Signals;
 }): { readonly calls: SpawnCall[]; readonly spawnImpl: NativeSwapDeps['spawnImpl'] } {
   const calls: SpawnCall[] = [];
   const spawnImpl = ((cmd: string, args: readonly string[], options: Record<string, unknown>) => {
@@ -78,7 +82,11 @@ function createSpawnMock(routes: {
         stdout: routes.smokeStdout ?? `${STAGED_VERSION}\n`,
       }).child;
     }
-    return fakeChild({ code: routes.reexecCode ?? 0, error: routes.reexecError }).child;
+    return fakeChild({
+      code: routes.reexecSignal !== undefined ? null : (routes.reexecCode ?? 0),
+      error: routes.reexecError,
+      signal: routes.reexecSignal ?? null,
+    }).child;
   }) as unknown as NativeSwapDeps['spawnImpl'];
   return { calls, spawnImpl };
 }
@@ -259,6 +267,18 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     // The binary on disk is already the new version; the next launch picks it up.
     const newExe = await readFile(exePath);
     expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
+  });
+
+  it('forwards a signal-derived nonzero exit code when the re-exec child is killed', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    const { spawnImpl } = createSpawnMock({ reexecSignal: 'SIGKILL' });
+    const exitImpl = vi.fn();
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(
+      makeDeps(exePath, { spawnImpl, exitImpl }),
+    );
+    expect(relaunched).toBe(true);
+    // 128 + 9 (SIGKILL), never a success-looking 0.
+    expect(exitImpl).toHaveBeenCalledWith(137);
   });
 
   it('restores the staged metadata when the exe cannot be moved aside', async () => {

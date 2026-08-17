@@ -93,3 +93,27 @@ export async function tryAcquireUpdateInstallLock(
     throw error;
   }
 }
+
+/**
+ * Return the version recorded in the held lock file, or undefined when the
+ * lock is gone or unreadable. Lets a downloader that failed to acquire the
+ * lock distinguish "another instance is staging the SAME version" (its
+ * outcome is ours — report success) from "a different version is in flight"
+ * (must not be reported as success to a foreground `kimi upgrade`).
+ */
+export async function readUpdateInstallLockVersion(
+  filePath: string = getUpdateInstallLockFile(),
+): Promise<string | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, 'utf-8');
+  } catch {
+    return undefined;
+  }
+  try {
+    const version: unknown = (JSON.parse(raw) as { version?: unknown }).version;
+    return typeof version === 'string' && version.length > 0 ? version : undefined;
+  } catch {
+    return undefined;
+  }
+}

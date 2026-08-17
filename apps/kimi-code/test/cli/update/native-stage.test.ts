@@ -197,6 +197,37 @@ describe('stageNativeUpdate', () => {
       stat(join(getNativeStagingDir(exePath), 'kimi-0.6.0')),
     ).rejects.toThrow();
   });
+
+  it('cleans orphaned staging files before downloading, preserving live swap claims', async () => {
+    const stagingDir = getNativeStagingDir(exePath);
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(stagingDir, { recursive: true });
+    // Orphans from interrupted earlier runs: a referenced-by-nothing exe and
+    // a stale .part download.
+    await writeFile(join(stagingDir, 'kimi-9.9.9'), Buffer.from('orphan-exe'));
+    await writeFile(join(stagingDir, 'kimi-9.9.9.part'), Buffer.from('partial'));
+    // A live swap claim referencing its own staged exe must survive.
+    const claimExe = 'kimi-8.8.8';
+    await writeFile(join(stagingDir, claimExe), Buffer.from('swap-in-progress'));
+    await writeFile(
+      join(stagingDir, 'staged.json.swap-1234'),
+      JSON.stringify({ exeFileName: claimExe }),
+    );
+
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    expect(result.status).toBe('staged');
+
+    await expect(stat(join(stagingDir, 'kimi-9.9.9'))).rejects.toThrow();
+    await expect(stat(join(stagingDir, 'kimi-9.9.9.part'))).rejects.toThrow();
+    await expect(stat(join(stagingDir, 'staged.json.swap-1234'))).resolves.toBeDefined();
+    await expect(stat(join(stagingDir, claimExe))).resolves.toBeDefined();
+  });
 });
 
 describe('readStagedNativeUpdate / removeStagedNativeUpdate', () => {

@@ -5,6 +5,7 @@ import { runUpdateDownloadCommand } from '#/cli/sub/update-download';
 const mocks = vi.hoisted(() => ({
   detectNativeInstall: vi.fn(() => true),
   tryAcquireUpdateInstallLock: vi.fn(),
+  readUpdateInstallLockVersion: vi.fn(),
   stageNativeUpdate: vi.fn(),
 }));
 
@@ -14,6 +15,7 @@ vi.mock('#/cli/update/source', () => ({
 
 vi.mock('#/cli/update/install-lock', () => ({
   tryAcquireUpdateInstallLock: mocks.tryAcquireUpdateInstallLock,
+  readUpdateInstallLockVersion: mocks.readUpdateInstallLockVersion,
 }));
 
 vi.mock('#/cli/update/native-stage', () => ({
@@ -53,10 +55,33 @@ describe('runUpdateDownloadCommand', () => {
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('native build'));
   });
 
-  it('exits quietly when another instance holds the install lock', async () => {
+  it('exits quietly when another instance is staging the same version', async () => {
     mocks.tryAcquireUpdateInstallLock.mockResolvedValue(null);
+    mocks.readUpdateInstallLockVersion.mockResolvedValue('0.7.0');
     await expect(runUpdateDownloadCommand('0.7.0')).resolves.toBe(0);
     expect(mocks.stageNativeUpdate).not.toHaveBeenCalled();
+  });
+
+  it('fails instead of a false success when the lock holder stages another version', async () => {
+    mocks.tryAcquireUpdateInstallLock.mockResolvedValue(null);
+    mocks.readUpdateInstallLockVersion.mockResolvedValue('0.8.0');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(runUpdateDownloadCommand('0.7.0')).resolves.toBe(1);
+    expect(mocks.stageNativeUpdate).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('0.8.0'));
+  });
+
+  it('retries the acquire when the lock vanished between the two reads', async () => {
+    const release = vi.fn(async () => {});
+    mocks.tryAcquireUpdateInstallLock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ filePath: '/tmp/install.lock', release });
+    mocks.readUpdateInstallLockVersion.mockResolvedValue(undefined);
+    await expect(runUpdateDownloadCommand('0.7.0')).resolves.toBe(0);
+    expect(mocks.stageNativeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ version: '0.7.0' }),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('stages against the running exe and releases the lock', async () => {

@@ -9,11 +9,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, open, readFile, rename, rm, rmdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { chmod, mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 
 import { z } from 'zod';
 
+import { KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME } from '#/constant/app';
 import { getNativeStagedStateFile, getNativeStagingDir } from '#/utils/paths';
 import { writeJsonFile } from '#/utils/persistence';
 
@@ -94,6 +95,43 @@ export async function removeStagedNativeUpdate(
   await rmdir(stagingDir).catch(() => {});
 }
 
+/**
+ * Remove files in `.staging/` that nothing references: interrupted downloads
+ * (`.part`), and staged exes whose `staged.json` never landed (downloader
+ * killed between the two writes) — each such orphan is ~180 MB and would
+ * otherwise accumulate forever. Swap claim files (`staged.json.swap-*`) and
+ * the exes they reference are preserved: another instance may be mid-swap.
+ */
+async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(stagingDir);
+  } catch {
+    return;
+  }
+  const keep = new Set<string>([KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME]);
+  for (const entry of entries) {
+    if (!entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)) continue;
+    keep.add(entry);
+    const raw = await readFile(join(stagingDir, entry), 'utf-8').catch(() => null);
+    if (raw === null) continue;
+    try {
+      const exeFileName: unknown = (JSON.parse(raw) as { exeFileName?: unknown }).exeFileName;
+      if (typeof exeFileName === 'string' && exeFileName.length > 0) {
+        // basename(): the metadata contract is a plain file name — never let
+        // a hand-crafted path escape the staging dir.
+        keep.add(basename(exeFileName));
+      }
+    } catch {
+      // Unparseable claim: keep the claim file itself, touch nothing else.
+    }
+  }
+  for (const entry of entries) {
+    if (keep.has(entry)) continue;
+    await rm(join(stagingDir, entry), { force: true, recursive: true }).catch(() => {});
+  }
+}
+
 export interface StageNativeUpdateOptions {
   readonly version: string;
   /** Path of the installed executable the staged binary will later replace. */
@@ -169,6 +207,8 @@ export async function stageNativeUpdate(
   }
   const stagingDir = getNativeStagingDir(options.exePath);
   await mkdir(stagingDir, { recursive: true });
+  // Drop orphans from interrupted earlier runs before writing ours.
+  await cleanupStagingOrphans(stagingDir);
 
   const staged: StagedNativeUpdate = {
     version: options.version,

@@ -18,6 +18,7 @@
 
 import { spawn } from 'node:child_process';
 import { readdir, readFile, rename, rmdir, stat, unlink } from 'node:fs/promises';
+import { constants as osConstants } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import { gt } from 'semver';
@@ -285,10 +286,18 @@ function reexec(
       logSwap('re-exec spawn failed', { error: error.message });
       resolve(false);
     });
-    child.once('exit', (code, _signal) => {
+    child.once('exit', (code, signal) => {
       resolve(true);
       const exitImpl = deps.exitImpl ?? ((exitCode: number) => process.exit(exitCode));
-      exitImpl(code ?? 0);
+      if (code !== null) {
+        exitImpl(code);
+        return;
+      }
+      // Terminated by a signal (OOM kill, external SIGKILL, …): mirror the
+      // shell's 128 + signo convention so the wrapper never reports a killed
+      // run as a successful CLI invocation.
+      const signo = signal !== null ? (osConstants.signals[signal] ?? 0) : 0;
+      exitImpl(signo > 0 ? 128 + signo : 1);
     });
   });
 }
