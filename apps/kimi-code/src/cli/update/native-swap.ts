@@ -167,15 +167,17 @@ async function claimStagedUpdate(exePath: string): Promise<ClaimedStaged | null>
 
   const claimedPath = `${stateFile}.swap-${process.pid}`;
   try {
+    // The metadata's mtime can be arbitrarily old — the download may have
+    // finished hours before this launch. Stamp it BEFORE the rename so the
+    // claim is born fresh: a concurrent launch's sweep never observes a live
+    // claim that looks like crash residue (and would delete the staged exe
+    // plus this swap's rollback backup). Stamping the state file itself is
+    // harmless — nothing reads its mtime.
+    await utimes(stateFile, new Date(), new Date()).catch(() => {});
     await rename(stateFile, claimedPath);
   } catch {
     return null;
   }
-  // rename preserves the metadata's mtime, which can be arbitrarily old — the
-  // download may have finished hours before this launch. Stamp the claim so a
-  // concurrent launch's sweep does not misread this live claim as crash
-  // residue and delete the staged exe (and this swap's rollback backup).
-  await utimes(claimedPath, new Date(), new Date()).catch(() => {});
   return { staged, claimedPath };
 }
 
