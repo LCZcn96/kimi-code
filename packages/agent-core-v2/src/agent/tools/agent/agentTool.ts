@@ -366,8 +366,6 @@ export class SubagentTool implements ISubagentTool {
       profileName,
       prompt: promptText,
       signal: controller.signal,
-      // The Agent tool registers the run and emits spawned first (see
-      // execution) — consumers that ignore started before spawned stay right.
       deferStarted: true,
       cancel: (reason) => {
         controller.abort(reason);
@@ -502,7 +500,6 @@ export class SubagentTool implements ISubagentTool {
           model: handle.model,
           taskId,
         });
-        // Mirroring deferred this to keep spawned ahead of started.
         void requester.accessor
           .get(IEventDispatcher)
           ?.dispatch(new SubagentStarted({ subagentId: handle.agentId }));

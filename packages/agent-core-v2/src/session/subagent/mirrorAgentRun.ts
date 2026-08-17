@@ -20,7 +20,10 @@
  * clients can render both at spawn instead of waiting for the first
  * `agent.status.updated` frame. A caller that registers the run as a task
  * (the `Agent` tool) emits spawned only after registration, so the signal
- * also carries the task id clients bind cancel/status actions to.
+ * also carries the task id clients bind cancel/status actions to; such a
+ * caller passes `deferStarted` and dispatches `subagent.started` itself after
+ * spawned, because consumers drop started until spawned has established the
+ * row (and a failed registration must leave no started row behind).
  */
 
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
@@ -111,9 +114,6 @@ export interface MirrorAgentRunOptions {
   readonly suppressRateLimitFailureEvent?: boolean;
   readonly signal: AbortSignal;
   readonly cancel?: (reason?: unknown) => void;
-  /** Skip the synchronous `subagent.started` dispatch: the caller emits it
-      itself once its own preconditions (task registration, spawned) are in
-      place, so consumers never see started before spawned. */
   readonly deferStarted?: boolean;
 }
 

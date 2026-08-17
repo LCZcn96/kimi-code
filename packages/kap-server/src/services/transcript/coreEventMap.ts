@@ -289,6 +289,10 @@ export class AgentTranscriptProjector {
   private readonly tasks = new Map<string, TranscriptTask>();
   /** shell `commandId` → transcript `taskId` (`shell.output` is keyed by command id only). */
   private readonly shellTasks = new Map<string, string>();
+  /** subagent agent id → registered task id, for Agent-tool runs whose spawned
+      carried the registration (`taskId`): the task row keys by the task id so
+      `/tasks/{id}` actions resolve, and lifecycle events fold back to it. */
+  private readonly subagentTaskIds = new Map<string, string>();
   /** interaction id → the pending entity as last emitted (resolve spreads it). */
   private readonly interactions = new Map<string, TranscriptInteraction>();
   /** promptId → the prompt queue entity as last emitted (`prompt.upsert` replaces). */
@@ -1127,9 +1131,18 @@ export class AgentTranscriptProjector {
     description?: string;
     swarmIndex?: number;
     runInBackground: boolean;
+    taskId?: string;
   }): TranscriptOperation[] {
-    const task = this.upsertTask(event.subagentId, (prev) => ({
-      taskId: event.subagentId,
+    // An Agent-tool spawned carries the run's task registration: key the row
+    // by that task id (not the agent id) so `/tasks/{id}` cancel/status
+    // actions resolve, and fold the later `task.started` upsert into it
+    // instead of surfacing a second row.
+    const taskKey = event.taskId ?? event.subagentId;
+    if (event.taskId !== undefined) {
+      this.subagentTaskIds.set(event.subagentId, event.taskId);
+    }
+    const task = this.upsertTask(taskKey, (prev) => ({
+      taskId: taskKey,
       kind: 'subagent',
       state: 'running',
       // `runInBackground` subagents are detached from birth; foreground runs
@@ -1183,8 +1196,12 @@ export class AgentTranscriptProjector {
         : event.type === 'subagent.failed'
           ? 'failed'
           : 'running';
-    const task = this.upsertTask(event.subagentId, (prev) => ({
-      taskId: event.subagentId,
+    // Fold into the task-id-keyed row when the spawn registered one (see
+    // onSubagentSpawned) — the agent-id-keyed fallback is for spawns without
+    // a task registration (swarm/session-init/tower).
+    const taskKey = this.subagentTaskIds.get(event.subagentId) ?? event.subagentId;
+    const task = this.upsertTask(taskKey, (prev) => ({
+      taskId: taskKey,
       kind: 'subagent',
       state,
       detached: prev?.detached ?? true,

@@ -1014,6 +1014,50 @@ describe('AgentTranscriptProjector', () => {
     });
   });
 
+  it('keys an Agent-tool subagent row by its registered task id and folds the lifecycle', () => {
+    const projector = new AgentTranscriptProjector('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: ProjectorBusEvent): void => void tx.apply(projector.map(event));
+
+    feed(
+      ev({
+        type: 'subagent.spawned',
+        subagentId: 'agent-1',
+        subagentName: 'explore',
+        parentToolCallId: 'call-1',
+        description: 'Inspect files',
+        runInBackground: true,
+        taskId: 'task-9',
+      }),
+    );
+    feed(
+      ev({
+        type: 'task.started',
+        info: {
+          taskId: 'task-9',
+          kind: 'agent',
+          description: 'Inspect files',
+          status: 'running',
+          detached: true,
+          agentId: 'agent-1',
+          startedAt: 1_700_000_000_000,
+          endedAt: null,
+        },
+      }),
+    );
+    feed(ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'done' }));
+
+    expect(tx.getTask('task-9')).toMatchObject({
+      kind: 'subagent',
+      state: 'completed',
+      agentId: 'agent-1',
+      description: 'Inspect files',
+      detached: true,
+      resultSummary: 'done',
+    });
+    expect(tx.getTask('agent-1')).toBeUndefined();
+  });
+
   it('projects goal updates into meta.goal plus an inline marker', () => {
     const projector = new AgentTranscriptProjector('main');
     const tx = new AgentTranscript('main');
