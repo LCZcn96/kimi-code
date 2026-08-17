@@ -88,7 +88,7 @@ export function installCommandFor(
   }
 }
 
-export function canAutoInstall(source: InstallSource, platform: NodeJS.Platform): boolean {
+export function canAutoInstall(source: InstallSource, _platform: NodeJS.Platform): boolean {
   switch (source) {
     case 'npm-global':
     case 'pnpm-global':
@@ -100,7 +100,8 @@ export function canAutoInstall(source: InstallSource, platform: NodeJS.Platform)
       // behind the CDN release — prompt the user to run `brew upgrade` manually.
       return false;
     case 'native':
-      return platform !== 'win32';
+      // Staged-swap self update works on every platform (win32 included).
+      return true;
     case 'unsupported':
       return false;
   }
@@ -128,12 +129,12 @@ export function spawnForSource(
     case 'homebrew':
       return { cmd: 'brew', args: ['upgrade', 'kimi-code'] };
     case 'native':
-      // `curl … | bash` reports only the trailing bash's exit status, so a
-      // failed download (curl can't connect → empty stdin → bash exits 0)
-      // would look like a successful update. `pipefail` makes the pipeline
-      // surface curl's non-zero status so installUpdate() rejects and we warn
-      // instead of printing "Updated …".
-      return { cmd: 'bash', args: ['-c', `set -o pipefail; ${NATIVE_INSTALL_COMMAND_UNIX}`] };
+      // Native installs self-spawn the hidden downloader sub-command, which
+      // stages the binary next to the exe (verified against the release
+      // manifest's sha256); the swap happens on the next startup. This
+      // replaces the old `curl|bash` / `irm|iex` re-install dance — no shell,
+      // no pipeline exit-status loss, no PowerShell dependency on Windows.
+      return { cmd: process.execPath, args: ['__update_download', version] };
     case 'unsupported':
       throw new Error('unsupported install source cannot be auto-installed');
   }
@@ -158,6 +159,28 @@ function resolveSpawnCommand(cmd: string, platform: NodeJS.Platform): string | u
   return platform === 'win32' ? `"${resolved}"` : resolved;
 }
 
+/**
+ * Resolve the spawn target for an install. Package managers are resolved from
+ * `PATH` to an absolute executable via `resolveSpawnCommand` (workspace-trust
+ * safety, see above). The native self-spawn instead uses `process.execPath`
+ * verbatim — already absolute — and never goes through a shell. Returns the
+ * shell flag alongside, since Windows package-manager shims (.cmd) still
+ * need one.
+ */
+function resolveInstallSpawn(
+  source: InstallSource,
+  version: string,
+  platform: NodeJS.Platform,
+): { readonly resolvedCmd: string; readonly args: readonly string[]; readonly shell: boolean } | undefined {
+  const { cmd, args } = spawnForSource(source, version, platform);
+  if (source === 'native') {
+    return { resolvedCmd: cmd, args, shell: false };
+  }
+  const resolvedCmd = resolveSpawnCommand(cmd, platform);
+  if (resolvedCmd === undefined) return undefined;
+  return { resolvedCmd, args, shell: platform === 'win32' };
+}
+
 const THIRD_PARTY_SOURCE_NOTE =
   '\nNote: Third-party sources may lag behind the official release.\n' +
   `For the latest updates, use the official installer: ${KIMI_CODE_OFFICIAL_INSTALL_URL}\n`;
@@ -180,7 +203,7 @@ export function renderManualUpdateMessage(
       sourceDesc = 'homebrew';
       break;
     case 'native':
-      sourceDesc = 'native (windows). Auto-update is not supported on this platform.';
+      sourceDesc = 'native installer';
       break;
     case 'unsupported':
       sourceDesc = 'unsupported package manager or layout.';
@@ -508,19 +531,21 @@ export async function installUpdate(
   version: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
-  const { cmd, args } = spawnForSource(source, version, platform);
-  const resolvedCmd = resolveSpawnCommand(cmd, platform);
-  if (resolvedCmd === undefined) {
-    throw new Error(`${cmd} was not found in PATH; cannot install the update`);
+  const spawnTarget = resolveInstallSpawn(source, version, platform);
+  if (spawnTarget === undefined) {
+    throw new Error(
+      `${spawnForSource(source, version, platform).cmd} was not found in PATH; cannot install the update`,
+    );
   }
   await new Promise<void>((resolve, reject) => {
     // Windows package managers (npm/pnpm/yarn) are .cmd shims. Since the
     // CVE-2024-27980 fix, Node throws EINVAL when spawning a .cmd/.bat without
     // a shell, so run through the shell on win32. The version is a validated
-    // semver and the package name is a constant, so args are shell-safe.
-    const child = spawn(resolvedCmd, [...args], {
+    // semver and the package name is a constant, so args are shell-safe. The
+    // native self-spawn is an .exe and needs no shell.
+    const child = spawn(spawnTarget.resolvedCmd, [...spawnTarget.args], {
       stdio: 'inherit',
-      shell: platform === 'win32' ? true : undefined,
+      shell: spawnTarget.shell ? true : undefined,
     });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
@@ -529,7 +554,7 @@ export async function installUpdate(
         return;
       }
       const detail = signal !== null ? `signal ${signal}` : `code ${String(code)}`;
-      reject(new Error(`${cmd} exited with ${detail}`));
+      reject(new Error(`update install exited with ${detail}`));
     });
   });
 }
@@ -577,7 +602,7 @@ async function startBackgroundInstall(
       source,
     });
 
-    const { cmd, args } = spawnForSource(source, target.version, platform);
+    const spawnTarget = resolveInstallSpawn(source, target.version, platform);
     let settled = false;
 
     const finish = (succeeded: boolean): void => {
@@ -629,18 +654,17 @@ async function startBackgroundInstall(
       });
     };
 
-    const resolvedCmd = resolveSpawnCommand(cmd, platform);
-    if (resolvedCmd === undefined) {
+    if (spawnTarget === undefined) {
       // The package manager cannot be resolved to an absolute path outside
       // the cwd — record a normal install failure instead of spawning a bare
       // command name that Windows would resolve into the untrusted workspace.
       finish(false);
       return;
     }
-    const child = spawn(resolvedCmd, [...args], {
+    const child = spawn(spawnTarget.resolvedCmd, [...spawnTarget.args], {
       detached: true,
       stdio: 'ignore',
-      shell: platform === 'win32' ? true : undefined,
+      shell: spawnTarget.shell ? true : undefined,
       // On Windows a detached child gets its own console window; with shell:true
       // that window would flash during a passive background update. Hide it so
       // the silent updater stays silent.
