@@ -1855,8 +1855,6 @@ describe('Agent tool execution contract', () => {
       description: 'Find cause',
       timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
     });
-    // The spawned signal is emitted after task registration, so clients can
-    // bind cancel/status to the task store immediately.
     expect(lifecycle.publishedEvents).toContainEqual(
       expect.objectContaining({
         type: 'subagent.spawned',
@@ -1864,6 +1862,9 @@ describe('Agent tool execution contract', () => {
         taskId,
       }),
     );
+    const eventOrder = lifecycle.publishedEvents.map((event) => event.type);
+    expect(eventOrder.indexOf('subagent.spawned')).toBeGreaterThanOrEqual(0);
+    expect(eventOrder.indexOf('subagent.started')).toBeGreaterThan(eventOrder.indexOf('subagent.spawned'));
     completion.resolve({ summary: 'finished later' });
   });
 
@@ -1970,6 +1971,11 @@ describe('Agent tool execution contract', () => {
       output: 'Too many background tasks are already running.',
     });
     expect(lifecycle.create).toHaveBeenCalledTimes(2);
+    expect(
+      lifecycle.publishedEvents.filter(
+        (event) => (event as { subagentId?: string }).subagentId === 'agent-second',
+      ),
+    ).toEqual([]);
     completions[0]?.resolve({ summary: 'finished later' });
   });
 

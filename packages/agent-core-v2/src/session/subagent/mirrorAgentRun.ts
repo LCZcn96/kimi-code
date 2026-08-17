@@ -111,6 +111,10 @@ export interface MirrorAgentRunOptions {
   readonly suppressRateLimitFailureEvent?: boolean;
   readonly signal: AbortSignal;
   readonly cancel?: (reason?: unknown) => void;
+  /** Skip the synchronous `subagent.started` dispatch: the caller emits it
+      itself once its own preconditions (task registration, spawned) are in
+      place, so consumers never see started before spawned. */
+  readonly deferStarted?: boolean;
 }
 
 export function emitAgentRunSpawned(
@@ -156,7 +160,9 @@ export async function mirrorAgentRun(
   const dispatcher = requester.accessor.get(IEventDispatcher);
   const subagents = requester.accessor.get(ISessionSubagentService);
   const agentLifecycle = requester.accessor.get(IAgentLifecycleService);
-  void dispatcher?.dispatch(new SubagentStarted({ subagentId: run.agentId }));
+  if (options.deferStarted !== true) {
+    void dispatcher?.dispatch(new SubagentStarted({ subagentId: run.agentId }));
+  }
   if (options.prompt !== undefined) {
     const cancelAndRethrow = (reason: unknown): never => {
       options.cancel?.(reason);

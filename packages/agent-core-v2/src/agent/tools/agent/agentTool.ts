@@ -37,7 +37,8 @@
  * live agent must not see (new profiles take effect on `/new` or `/reload`).
  * The `subagent.spawned` signal is emitted only after the run's task
  * registration succeeds, so it carries the task id (and a failed registration
- * leaves no spawned row behind).
+ * leaves no spawned row behind); the mirrored `subagent.started` is deferred
+ * until after it, keeping the spawned → started order consumers rely on.
  * Bound at Agent scope.
  */
 
@@ -94,7 +95,8 @@ import type { Runtime } from '#/runtime/runtime';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 
-import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
+import { emitAgentRunSpawned, mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import {
   buildSubagentModelDescriptions,
@@ -364,6 +366,9 @@ export class SubagentTool implements ISubagentTool {
       profileName,
       prompt: promptText,
       signal: controller.signal,
+      // The Agent tool registers the run and emits spawned first (see
+      // execution) — consumers that ignore started before spawned stay right.
+      deferStarted: true,
       cancel: (reason) => {
         controller.abort(reason);
       },
@@ -497,6 +502,10 @@ export class SubagentTool implements ISubagentTool {
           model: handle.model,
           taskId,
         });
+        // Mirroring deferred this to keep spawned ahead of started.
+        requester.accessor
+          .get(IEventDispatcher)
+          ?.dispatch(new SubagentStarted({ subagentId: handle.agentId }));
       }
 
       if (runInBackground) {
