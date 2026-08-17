@@ -250,8 +250,22 @@ export async function maybeRelaunchWithStagedNativeUpdate(
 
   const stagedExe = stagedExePath(deps.exePath, staged);
 
-  // 1. Pick a backup slot and move the running exe aside (rename of a running
+  // 1. Smoke-check the staged exe BEFORE touching the install path: a staged
+  //    binary that cannot start (or lies about its version) is discarded with
+  //    the running exe never moved — the safest possible failure shape.
+  if (!(await smokeCheck(stagedExe, staged, spawnImpl))) {
+    logSwap('smoke check failed, discarding staged update', { version: staged.version });
+    await recordSwapFailure(staged.version);
+    return discard();
+  }
+
+  // 2. Pick a backup slot and move the running exe aside (rename of a running
   //    exe is legal on Windows and POSIX alike; overwriting is not).
+  //
+  //    Crash window: if the process dies between this rename and step 3, the
+  //    install path is left empty and no CLI code can run to self-heal. Each
+  //    rename is atomic, the window is two adjacent syscalls, and recovery is
+  //    `mv <exe>.bak <exe>` or re-running the install script.
   let bakPath = `${deps.exePath}.bak`;
   const oldBakCleared = await unlink(bakPath)
     .then(() => true)
@@ -272,19 +286,9 @@ export async function maybeRelaunchWithStagedNativeUpdate(
     return false;
   }
 
-  // 2. Move the staged exe into place; roll back on failure.
+  // 3. Move the staged exe into place; roll back on failure.
   if ((await rename(stagedExe, deps.exePath).catch(() => null)) === null) {
     logSwap('failed to move staged exe into place, rolling back', { exePath: deps.exePath });
-    await rollback(bakPath, deps.exePath);
-    await recordSwapFailure(staged.version);
-    return discard();
-  }
-
-  // 3. Smoke-check the new exe; roll back when it cannot start or lies about
-  //    its version.
-  if (!(await smokeCheck(deps.exePath, staged, spawnImpl))) {
-    logSwap('smoke check failed, rolling back', { version: staged.version });
-    await unlink(deps.exePath).catch(() => {});
     await rollback(bakPath, deps.exePath);
     await recordSwapFailure(staged.version);
     return discard();

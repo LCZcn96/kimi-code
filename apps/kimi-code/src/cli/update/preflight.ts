@@ -569,7 +569,14 @@ async function startBackgroundInstall(
   logger: UpdateLogger,
   rolloutTelemetry: RolloutTelemetry,
 ): Promise<void> {
-  const lock = await tryAcquireUpdateInstallLock({ version: target.version });
+  // The native self-spawned downloader holds the install lock itself for the
+  // whole download — taking it here too would race the child (it starts before
+  // this function's finally releases) into a false success. Package-manager
+  // installs keep the outer lock, which only guards against duplicate spawns.
+  const lock =
+    source === 'native'
+      ? { filePath: '', release: async (): Promise<void> => {} }
+      : await tryAcquireUpdateInstallLock({ version: target.version });
   if (lock === null) return;
 
   try {
