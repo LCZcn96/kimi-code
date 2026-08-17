@@ -229,8 +229,12 @@ export async function maybeRelaunchWithStagedNativeUpdate(
   const spawnImpl = deps.spawnImpl ?? spawn;
 
   const discard = async (): Promise<boolean> => {
-    await removeStagedNativeUpdate(deps.exePath);
+    // claimedPath lives inside `.staging/` — remove it first so the
+    // best-effort rmdir in removeStagedNativeUpdate can actually succeed.
+    // The staged metadata must be passed along: claiming already renamed the
+    // state file away, so rediscovery would find nothing and leak the exe.
     await unlink(claimedPath).catch(() => {});
+    await removeStagedNativeUpdate(deps.exePath, staged);
     return false;
   };
 

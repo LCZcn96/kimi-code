@@ -77,9 +77,15 @@ export async function readStagedNativeUpdate(
 }
 
 /** Remove staged.json + the staged exe; used on downgrade-guard discards and swap failures. */
-export async function removeStagedNativeUpdate(exePath: string): Promise<void> {
+export async function removeStagedNativeUpdate(
+  exePath: string,
+  knownStaged?: StagedNativeUpdate,
+): Promise<void> {
   const stagingDir = getNativeStagingDir(exePath);
-  const staged = await readStagedNativeUpdate(exePath).catch(() => null);
+  // The swap flow claims staged.json by renaming it away first, so callers
+  // there must pass the already-read metadata — discovering it from the
+  // (now missing) state file would find nothing and leak the staged exe.
+  const staged = knownStaged ?? (await readStagedNativeUpdate(exePath).catch(() => null));
   if (staged !== null) {
     await rm(stagedExePath(exePath, staged), { force: true }).catch(() => {});
   }

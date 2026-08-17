@@ -178,6 +178,7 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
     // Staged artifacts are gone, so future launches do not retry the discard.
     await expect(stat(getNativeStagedStateFile(exePath))).rejects.toThrow();
+    await expect(stat(getNativeStagingDir(exePath))).rejects.toThrow();
   });
 
   it('discards staged metadata whose exe is missing', async () => {
@@ -229,6 +230,7 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(calls).toHaveLength(1); // smoke only, no re-exec
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
     await expect(stat(getNativeStagedStateFile(exePath))).rejects.toThrow();
+    await expect(stat(getNativeStagingDir(exePath))).rejects.toThrow();
 
     const state = await readUpdateInstallState();
     expect(state.lastFailure).toMatchObject({ version: STAGED_VERSION, attempts: 1 });
