@@ -47,7 +47,16 @@ function mockCdnFetch(options: MockCdnOptions): typeof fetch {
       return { ok: true, status: 200, text: async () => manifestBody, body: null };
     }
     if (url === nativeBinaryUrl(version, BINARY_FILENAME)) {
-      return { ok: true, status: 200, text: async () => '', body: [options.payload] };
+      return {
+        ok: true,
+        status: 200,
+        text: async (): Promise<string> => '',
+        headers: {
+          get: (name: string): string | null =>
+            name === 'content-length' ? String(options.payload.length) : null,
+        },
+        body: [options.payload],
+      };
     }
     return { ok: false, status: 404, text: async () => '', body: null };
   }) as unknown as typeof fetch;
@@ -104,6 +113,22 @@ describe('stageNativeUpdate', () => {
     });
     const info = await stat(stagedExePath(exePath, result.staged));
     expect(info.mode & 0o111).not.toBe(0);
+  });
+
+  it('reports download progress with the Content-Length total', async () => {
+    const progress: Array<readonly [number, number | null]> = [];
+    await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+      onProgress: (downloaded, total) => {
+        progress.push([downloaded, total]);
+      },
+    });
+    // One frame per chunk; the mock stream delivers the payload in one piece.
+    expect(progress).toEqual([[PAYLOAD.length, PAYLOAD.length]]);
   });
 
   it('short-circuits when the same version is already staged', async () => {

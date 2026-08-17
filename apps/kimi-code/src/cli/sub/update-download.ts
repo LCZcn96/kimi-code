@@ -38,10 +38,22 @@ export async function runUpdateDownloadCommand(version: string): Promise<number>
       return 1;
     }
   }
+  const out = process.stdout;
+  const label = `Downloading Kimi Code ${version} (${process.platform}-${process.arch})…`;
+  const onProgress = createDownloadProgress(out, label);
   try {
-    await stageNativeUpdate({ version, exePath: process.execPath, stdout: process.stdout });
+    const result = await stageNativeUpdate({
+      version,
+      exePath: process.execPath,
+      onProgress,
+    });
+    if (out.isTTY) out.write('\n');
+    if (result.status === 'already-staged') {
+      out.write(`Kimi Code ${version} is already downloaded; it applies on the next start.\n`);
+    }
     return 0;
   } catch (error) {
+    if (out.isTTY) out.write('\n');
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`error: failed to download update ${version}: ${message}\n`);
     log.warn('native update download failed', { version, error: message });
@@ -49,4 +61,44 @@ export async function runUpdateDownloadCommand(version: string): Promise<number>
   } finally {
     await lock.release().catch(() => {});
   }
+}
+
+const PROGRESS_FRAME_INTERVAL_MS = 100;
+const PROGRESS_LINE_INTERVAL_BYTES = 32 * 1024 * 1024;
+
+function formatDownloadProgress(label: string, downloaded: number, total: number | null): string {
+  const mb = Math.floor(downloaded / (1024 * 1024));
+  if (total === null || total <= 0) return `${label} ${mb} MB`;
+  const totalMb = Math.max(1, Math.round(total / (1024 * 1024)));
+  const percent = Math.min(100, Math.floor((downloaded / total) * 100));
+  return `${label} ${percent}% (${mb}/${totalMb} MB)`;
+}
+
+/**
+ * Download progress renderer for the (foreground) downloader: a single
+ * in-place line on a TTY (`\r` + clear-line, throttled to 10 fps, final frame
+ * always rendered), or one line per 32 MB when piped to a file. The caller
+ * owns the trailing newline.
+ */
+export function createDownloadProgress(
+  out: NodeJS.WriteStream,
+  label: string,
+): (downloadedBytes: number, totalBytes: number | null) => void {
+  const isTTY = out.isTTY;
+  let lastFrameAt = 0;
+  let lastLineAt = 0;
+  if (!isTTY) out.write(`${label}\n`);
+  return (downloaded, total) => {
+    const done = total !== null && downloaded >= total;
+    if (isTTY) {
+      const now = Date.now();
+      if (!done && now - lastFrameAt < PROGRESS_FRAME_INTERVAL_MS) return;
+      lastFrameAt = now;
+      out.write(`\r\u001B[K${formatDownloadProgress(label, downloaded, total)}`);
+      return;
+    }
+    if (!done && downloaded - lastLineAt < PROGRESS_LINE_INTERVAL_BYTES) return;
+    lastLineAt = downloaded;
+    out.write(`${formatDownloadProgress(label, downloaded, total)}\n`);
+  };
 }

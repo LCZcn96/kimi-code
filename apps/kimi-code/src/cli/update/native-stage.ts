@@ -139,7 +139,8 @@ export interface StageNativeUpdateOptions {
   readonly platform?: NodeJS.Platform;
   readonly arch?: string;
   readonly fetchImpl?: typeof fetch;
-  readonly stdout?: { write(chunk: string): boolean };
+  /** Download progress (bytes so far, Content-Length total when known). */
+  readonly onProgress?: (downloadedBytes: number, totalBytes: number | null) => void;
 }
 
 export type StageNativeUpdateStatus = 'already-staged' | 'staged';
@@ -154,11 +155,15 @@ async function downloadAndHash(
   partPath: string,
   expectedSha256: string,
   fetchImpl: typeof fetch,
+  onProgress?: (downloadedBytes: number, totalBytes: number | null) => void,
 ): Promise<number> {
   const response = await fetchImpl(url);
   if (!response.ok || response.body === null) {
     throw new Error(`native binary download returned HTTP ${response.status}`);
   }
+  const contentLength = response.headers.get('content-length');
+  const total =
+    contentLength !== null && /^\d+$/.test(contentLength) ? Number(contentLength) : null;
   const hash = createHash('sha256');
   let size = 0;
   const file = await open(partPath, 'w');
@@ -167,6 +172,7 @@ async function downloadAndHash(
       hash.update(chunk);
       size += chunk.length;
       await file.write(chunk);
+      onProgress?.(size, total);
     }
   } finally {
     await file.close();
@@ -223,12 +229,12 @@ export async function stageNativeUpdate(
   try {
     const manifest = await fetchNativeReleaseManifest(options.version, fetchImpl);
     const entry = selectPlatformEntry(manifest, platform, arch);
-    options.stdout?.write(`Downloading Kimi Code ${options.version} (${target})…\n`);
     const size = await downloadAndHash(
       nativeBinaryUrl(options.version, entry.filename),
       partPath,
       entry.checksum,
       fetchImpl,
+      options.onProgress,
     );
     // sha256 matched the manifest: promote the download to the staged exe.
     await rename(partPath, stagedExePath(options.exePath, staged));

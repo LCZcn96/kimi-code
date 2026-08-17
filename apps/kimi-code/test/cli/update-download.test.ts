@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runUpdateDownloadCommand } from '#/cli/sub/update-download';
+import { createDownloadProgress, runUpdateDownloadCommand } from '#/cli/sub/update-download';
 
 const mocks = vi.hoisted(() => ({
   detectNativeInstall: vi.fn(() => true),
@@ -30,6 +30,65 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
     ...actual,
     log: { ...actual.log, warn: vi.fn() },
   };
+});
+
+function fakeOut(isTTY: boolean): { readonly out: NodeJS.WriteStream; readonly chunks: string[] } {
+  const chunks: string[] = [];
+  const out = {
+    isTTY,
+    write(chunk: string) {
+      chunks.push(chunk);
+      return true;
+    },
+  } as unknown as NodeJS.WriteStream;
+  return { out, chunks };
+}
+
+describe('createDownloadProgress', () => {
+  it('renders a throttled in-place line on a TTY, with the final frame always shown', () => {
+    const { out, chunks } = fakeOut(true);
+    const progress = createDownloadProgress(out, 'Downloading…');
+    const total = 100 * 1024 * 1024;
+
+    const nowSpy = vi.spyOn(Date, 'now');
+    nowSpy.mockReturnValue(1_000);
+    progress(10 * 1024 * 1024, total);
+    nowSpy.mockReturnValue(1_050); // inside the 100 ms throttle window → skipped
+    progress(20 * 1024 * 1024, total);
+    nowSpy.mockReturnValue(1_200);
+    progress(30 * 1024 * 1024, total);
+    progress(total, total); // final frame is never throttled
+
+    expect(chunks).toEqual([
+      '\r\u001B[KDownloading… 10% (10/100 MB)',
+      '\r\u001B[KDownloading… 30% (30/100 MB)',
+      '\r\u001B[KDownloading… 100% (100/100 MB)',
+    ]);
+    nowSpy.mockRestore();
+  });
+
+  it('prints the label up front and one line per 32 MB when piped', () => {
+    const { out, chunks } = fakeOut(false);
+    const progress = createDownloadProgress(out, 'Downloading…');
+    const total = 100 * 1024 * 1024;
+
+    progress(10 * 1024 * 1024, total); // below the 32 MB line interval → skipped
+    progress(40 * 1024 * 1024, total);
+    progress(total, total);
+
+    expect(chunks).toEqual([
+      'Downloading…\n',
+      'Downloading… 40% (40/100 MB)\n',
+      'Downloading… 100% (100/100 MB)\n',
+    ]);
+  });
+
+  it('degrades to plain MB counts when Content-Length is unknown', () => {
+    const { out, chunks } = fakeOut(true);
+    const progress = createDownloadProgress(out, 'Downloading…');
+    progress(5 * 1024 * 1024, null);
+    expect(chunks).toEqual(['\r\u001B[KDownloading… 5 MB']);
+  });
 });
 
 describe('runUpdateDownloadCommand', () => {
