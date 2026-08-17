@@ -247,18 +247,22 @@ async function cleanupStaleSwapClaims(exePath: string): Promise<boolean> {
  * launch. The swap itself can never fully clean up after its own run — the
  * old process still holds its renamed image (`.bak`) on Windows — so later
  * launches sweep what the previous run could not.
+ *
+ * Returns true when another instance holds a fresh swap claim: every
+ * artifact is then left alone and the caller must not start a second swap.
  */
-async function sweepStaleNativeUpdateArtifacts(exePath: string): Promise<void> {
+async function sweepStaleNativeUpdateArtifacts(exePath: string): Promise<boolean> {
   try {
     if (await cleanupStaleSwapClaims(exePath)) {
       // Another instance is mid-swap: leave every artifact alone — the `.bak`
       // next to the exe is its rollback source.
-      return;
+      return true;
     }
     await cleanupBackups(exePath);
   } catch {
     // Hygiene must never affect startup.
   }
+  return false;
 }
 
 /**
@@ -313,11 +317,20 @@ export async function maybeRelaunchWithStagedNativeUpdate(
   deps: NativeSwapDeps,
 ): Promise<boolean> {
   if (!deps.isNative) return false;
-  await sweepStaleNativeUpdateArtifacts(deps.exePath);
+  const swapInProgress = await sweepStaleNativeUpdateArtifacts(deps.exePath);
   if (isTruthy(deps.env[KIMI_CODE_UPDATE_REEXEC_ENV])) {
     // Read-once guard: drop it so this session's children (and any nested
     // kimi launches from them) do not inherit the swap skip.
     delete deps.env[KIMI_CODE_UPDATE_REEXEC_ENV];
+    return false;
+  }
+  if (swapInProgress) {
+    // Another instance holds a fresh swap claim and finishes (or rolls back)
+    // on its own. Starting a second swap here would rename the install path
+    // from under it and let each launcher delete the `.bak` the other may
+    // still need for rollback. Its re-exec — or our next launch — lands the
+    // update, so this session simply runs the current exe.
+    logSwap('another instance is mid-swap, skipping', { exePath: deps.exePath });
     return false;
   }
 

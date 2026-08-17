@@ -346,6 +346,26 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     await expect(stat(`${exePath}.bak`)).resolves.toBeDefined();
   });
 
+  it('does not claim a newly staged update while another instance is mid-swap', async () => {
+    // Instance A holds a fresh claim; a downloader has since published a new
+    // staged.json. Claiming it here would start a second concurrent swap.
+    const stagingDir = getNativeStagingDir(exePath);
+    await mkdir(stagingDir, { recursive: true });
+    const claimPath = join(stagingDir, 'staged.json.swap-4242');
+    await writeFile(claimPath, '{}\n', 'utf-8');
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    // The staged update and the claim stay put; the launch after the
+    // in-flight swap ends picks the update up.
+    await expect(stat(getNativeStagedStateFile(exePath))).resolves.toBeDefined();
+    await expect(stat(claimPath)).resolves.toBeDefined();
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
+  });
+
   it('cleans up stale swap claims and their orphaned staged exe', async () => {
     const stagingDir = getNativeStagingDir(exePath);
     await mkdir(stagingDir, { recursive: true });
