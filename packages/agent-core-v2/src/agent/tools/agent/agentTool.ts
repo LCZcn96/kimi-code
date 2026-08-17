@@ -37,8 +37,9 @@
  * live agent must not see (new profiles take effect on `/new` or `/reload`).
  * The `subagent.spawned` signal is emitted only after the run's task
  * registration succeeds, so it carries the task id (and a failed registration
- * leaves no spawned row behind); the mirrored `subagent.started` is deferred
- * until after it, keeping the spawned → started order consumers rely on.
+ * leaves no spawned row behind); lifecycle signals go out through the `state`
+ * domain's event dispatcher, and the mirrored `subagent.started` is deferred
+ * until after spawned, keeping the spawned → started order consumers rely on.
  * Bound at Agent scope.
  */
 
