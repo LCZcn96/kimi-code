@@ -14,6 +14,32 @@ import {
 } from '#/cli/update/native-stage';
 import { getNativeStagedStateFile, getNativeStagingDir } from '#/utils/paths';
 
+const fsMocks = vi.hoisted(() => ({
+  /** Records chmod/rename calls (path-based) so tests can assert ordering. */
+  calls: [] as Array<{ readonly op: 'chmod' | 'rename'; readonly path: string; readonly dst?: string }>,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    chmod: async (
+      path: Parameters<typeof actual.chmod>[0],
+      mode: Parameters<typeof actual.chmod>[1],
+    ) => {
+      fsMocks.calls.push({ op: 'chmod', path: String(path) });
+      return actual.chmod(path, mode);
+    },
+    rename: async (
+      src: Parameters<typeof actual.rename>[0],
+      dst: Parameters<typeof actual.rename>[1],
+    ) => {
+      fsMocks.calls.push({ op: 'rename', path: String(src), dst: String(dst) });
+      return actual.rename(src, dst);
+    },
+  };
+});
+
 const VERSION = '0.7.0';
 const PAYLOAD = Buffer.from('fake-sea-binary-payload');
 // The CDN serves the bare platform binary; the manifest checksum is its sha256.
@@ -69,6 +95,7 @@ describe('stageNativeUpdate', () => {
   beforeEach(async () => {
     workDir = await mkdtemp(join(tmpdir(), 'kimi-stage-test-'));
     exePath = join(workDir, 'bin', 'kimi');
+    fsMocks.calls.length = 0;
   });
 
   afterEach(async () => {
@@ -113,6 +140,30 @@ describe('stageNativeUpdate', () => {
     });
     const info = await stat(stagedExePath(exePath, result.staged));
     expect(info.mode & 0o111).not.toBe(0);
+  });
+
+  it('makes the download executable before publishing it at the staged name', async () => {
+    // A concurrent swap may move the staged exe into place the instant it
+    // appears at its published name, so the chmod must land on the private
+    // .part file first — a later chmod could hit an already-moved path.
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    const stagedExe = stagedExePath(exePath, result.staged);
+    const partPath = `${stagedExe}.part`;
+    const chmodIndex = fsMocks.calls.findIndex(
+      (call) => call.op === 'chmod' && call.path === partPath,
+    );
+    const publishIndex = fsMocks.calls.findIndex(
+      (call) => call.op === 'rename' && call.path === partPath && call.dst === stagedExe,
+    );
+    expect(chmodIndex).toBeGreaterThanOrEqual(0);
+    expect(publishIndex).toBeGreaterThanOrEqual(0);
+    expect(chmodIndex).toBeLessThan(publishIndex);
   });
 
   it('reports download progress with the Content-Length total', async () => {

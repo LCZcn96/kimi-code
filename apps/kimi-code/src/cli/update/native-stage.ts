@@ -265,9 +265,13 @@ export async function stageNativeUpdate(
       options.onProgress,
       options.idleTimeoutMs,
     );
-    // sha256 matched the manifest: promote the download to the staged exe.
+    // sha256 matched the manifest. Make the private .part file executable
+    // BEFORE publishing it: a concurrent swap may move the staged exe into
+    // the install path the instant it appears at its published name, so a
+    // post-publish chmod could land on a path that is already gone — leaving
+    // a non-executable installation behind.
+    await chmod(partPath, 0o755);
     await rename(partPath, stagedExePath(options.exePath, staged));
-    await chmod(stagedExePath(options.exePath, staged), 0o755);
 
     staged.sha256 = entry.checksum;
     staged.exeSize = size;
