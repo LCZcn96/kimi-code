@@ -54,6 +54,22 @@ describe('update install lock', () => {
     await winners[0]?.release();
   });
 
+  it('grants exactly one winner when racing to take over a stale lock', async () => {
+    // A dead holder's aged lock: every contender classifies it as stale and
+    // tries to take it over. Compare-and-delete plus post-publish
+    // verification must leave exactly one survivor.
+    const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await new Promise((resolve) => child.once('exit', resolve));
+    writeAgedLock(child.pid ?? -1);
+
+    const attempts = await Promise.all(
+      Array.from({ length: 20 }, () => tryAcquireUpdateInstallLock({ version: '0.5.0' })),
+    );
+    const winners = attempts.filter((handle) => handle !== null);
+    expect(winners).toHaveLength(1);
+    await winners[0]?.release();
+  });
+
   it('recovers from a corrupt lock file', async () => {
     const filePath = getUpdateInstallLockFile();
     mkdirSync(dirname(filePath), { recursive: true });
