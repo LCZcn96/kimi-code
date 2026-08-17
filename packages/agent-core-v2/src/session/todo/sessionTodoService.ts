@@ -90,12 +90,13 @@ export class SessionTodoService extends Service implements ISessionTodoService {
 
   private bindAgent(handle: IAgentScopeHandle): void {
     handle.accessor.get(IAgentStateService).contributeState(todoKey);
+    if (handle.id !== MAIN_AGENT_ID) return;
+
     const injector = handle.accessor.get(IAgentContextInjectorService);
     this.trackAgentBinding(
       handle.id,
       injector.register(TODO_LIST_REMINDER_VARIANT, () => this.staleReminder(handle)),
     );
-    if (handle.id !== MAIN_AGENT_ID) return;
 
     this.lastKnownTodos = handle.accessor.get(IAgentStateService).get(todoKey);
     this.trackAgentBinding(

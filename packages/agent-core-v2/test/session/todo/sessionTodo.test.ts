@@ -252,7 +252,7 @@ describe('SessionTodoService', () => {
     expect(service.getTodos()).toEqual([]);
   });
 
-  it('binds the stale-todo reminder into every created agent', () => {
+  it('binds the stale-todo reminder only into the main agent', () => {
     const lifecycle = makeLifecycleStub();
     const service = new SessionTodoService(lifecycle.service);
     void service;
@@ -263,7 +263,7 @@ describe('SessionTodoService', () => {
     lifecycle.fireCreate(sub.handle);
 
     expect(main.registeredVariants).toContain(TODO_LIST_REMINDER_VARIANT);
-    expect(sub.registeredVariants).toContain(TODO_LIST_REMINDER_VARIANT);
+    expect(sub.registeredVariants).not.toContain(TODO_LIST_REMINDER_VARIANT);
   });
 
   it('rebuilds the list when a todo tools.update_store record is replayed', async () => {
