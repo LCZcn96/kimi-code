@@ -17,7 +17,8 @@ export const SubagentToolInputSchema = z.preprocess(
       typeof normalized['resume'] === 'string' && normalized['resume'].trim().length > 0;
     const hasSubagentType =
       typeof normalized['subagent_type'] === 'string' && normalized['subagent_type'].length > 0;
-    if (!hasSubagentType && !hasResumeId) {
+    const hasFork = normalized['fork'] === true;
+    if (!hasSubagentType && !hasResumeId && !hasFork) {
       normalized['subagent_type'] = DEFAULT_PROFILE_NAME;
     } else if (!hasSubagentType) {
       delete normalized['subagent_type'];
@@ -44,6 +45,12 @@ export const SubagentToolInputSchema = z.preprocess(
       .optional()
       .describe(
         'If true, return immediately without waiting for completion. Prefer false unless the task can run independently and there is a clear benefit to not waiting.',
+      ),
+    fork: z
+      .boolean()
+      .optional()
+      .describe(
+        'Fork the current context: the subagent starts with a snapshot of this agent\'s completed conversation history instead of zero context, inheriting this agent\'s agent type, tool set, and model. Do not pass resume, subagent_type, or model together with fork — those combinations are rejected.',
       ),
     model: z
       .string()
@@ -74,6 +81,14 @@ export const BACKGROUND_AGENT_UNAVAILABLE =
   'Background agent execution is not available for this agent because TaskList, TaskOutput, and TaskStop are not enabled.';
 export const RESUME_WITH_TYPE_UNAVAILABLE =
   'Cannot set subagent_type when resuming an existing agent. Resume by agent id only.';
+export const FORK_WITH_RESUME_UNAVAILABLE =
+  'Cannot set resume when forking the current context. Fork creates a new agent; resume continues an existing one.';
+export const FORK_WITH_TYPE_UNAVAILABLE =
+  'Cannot set a different subagent_type when forking the current context. A fork inherits this agent\'s own agent type.';
+export const FORK_WITH_MODEL_UNAVAILABLE =
+  'Cannot override the model when forking the current context. A fork inherits this agent\'s model.';
+export const FORK_CONTEXT_NOTICE =
+  'The conversation above is not your own history: it is a one-time snapshot inherited from the agent that forked you. Treat it as reference material only — you are an independent subagent, not a continuation of that agent. Do the task below directly yourself, then report the result.';
 export const USER_INTERRUPTED_SUBAGENT_MESSAGE =
   'The subagent was stopped before it finished by user.';
 export const SUBAGENT_STOPPED_MESSAGE = 'The subagent was stopped before it finished.';

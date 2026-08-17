@@ -21,6 +21,7 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import {
   ToolAccesses,
@@ -53,10 +54,12 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { trimTrailingOpenToolExchange } from '#/session/subagent/internal/forkSeed';
 import {
   buildSubagentModelDescriptions,
   exposesSubagentModelChoice,
   formatSubagentTimeoutDescription,
+  PRIMARY_SUBAGENT_MODEL_CHOICE,
   resolveSubagentBinding,
   resolveSubagentTimeoutMs,
   stripSubagentModelParameter,
@@ -65,6 +68,10 @@ import {
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
+  FORK_CONTEXT_NOTICE,
+  FORK_WITH_MODEL_UNAVAILABLE,
+  FORK_WITH_RESUME_UNAVAILABLE,
+  FORK_WITH_TYPE_UNAVAILABLE,
   ISubagentTool,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
@@ -190,6 +197,13 @@ export class SubagentTool implements ISubagentTool {
       return { output: RESUME_WITH_TYPE_UNAVAILABLE, isError: true };
     }
 
+    if (args.fork === true) {
+      const forkError = this.forkCompatibilityError(args);
+      if (forkError !== undefined) {
+        return { output: forkError, isError: true };
+      }
+    }
+
     const profileNameForDisplay =
       resumeAgentId !== undefined && resumeAgentId.length > 0
         ? this.resumeProfileName(resumeAgentId) ?? RESUMED_LABEL
@@ -214,6 +228,26 @@ export class SubagentTool implements ISubagentTool {
     const target = this.lifecycle.get(agentId);
     if (target === undefined) return undefined;
     return target.accessor.get(IAgentProfileService).data().profileName;
+  }
+
+  private forkCompatibilityError(args: SubagentToolInput): string | undefined {
+    const resumeAgentId = args.resume?.trim();
+    if (resumeAgentId !== undefined && resumeAgentId.length > 0) {
+      return FORK_WITH_RESUME_UNAVAILABLE;
+    }
+    const own = this.profile.data();
+    const requestedProfileName = args.subagent_type?.length ? args.subagent_type : undefined;
+    if (requestedProfileName !== undefined && requestedProfileName !== own.profileName) {
+      return FORK_WITH_TYPE_UNAVAILABLE;
+    }
+    if (
+      args.model !== undefined &&
+      args.model !== PRIMARY_SUBAGENT_MODEL_CHOICE &&
+      args.model !== own.modelAlias
+    ) {
+      return FORK_WITH_MODEL_UNAVAILABLE;
+    }
+    return undefined;
   }
 
   private async launch(
@@ -251,13 +285,16 @@ export class SubagentTool implements ISubagentTool {
       profileName = resumed.profileName ?? RESUMED_LABEL;
       displayModel = resumed.modelAlias;
     } else {
-      const requestedProfileName = args.subagent_type?.length
-        ? args.subagent_type
-        : DEFAULT_PROFILE_NAME;
+      const fork = args.fork === true;
       await this.catalog.ready;
       const own = this.profile.data();
+      const requestedProfileName = args.subagent_type?.length
+        ? args.subagent_type
+        : fork
+          ? (own.profileName ?? DEFAULT_PROFILE_NAME)
+          : DEFAULT_PROFILE_NAME;
       const allowlist = subagentAllowlistFor(this.catalog, own);
-      if (allowlist !== undefined && !allowlist.includes(requestedProfileName)) {
+      if (!fork && allowlist !== undefined && !allowlist.includes(requestedProfileName)) {
         throw new Error2(
           ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
           subagentTypeNotAllowedMessage(requestedProfileName, allowlist),
@@ -275,12 +312,14 @@ export class SubagentTool implements ISubagentTool {
           details: { agentId: this.callerAgentId },
         });
       }
-      const binding = resolveSubagentBinding(
-        this.config,
-        this.flags,
-        { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-        args.model,
-      );
+      const binding = fork
+        ? { model: own.modelAlias, thinking: own.thinkingLevel }
+        : resolveSubagentBinding(
+            this.config,
+            this.flags,
+            { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
+            args.model,
+          );
       let created: IAgentScopeHandle;
       try {
         this.modelCatalog.get(binding.model);
@@ -300,6 +339,14 @@ export class SubagentTool implements ISubagentTool {
       created.accessor
         .get(IAgentUserToolService)
         .inheritUserTools(requester.accessor.get(IAgentUserToolService));
+      if (fork) {
+        const seed = trimTrailingOpenToolExchange(
+          requester.accessor.get(IAgentContextMemoryService).get(),
+        );
+        if (seed.length > 0) {
+          created.accessor.get(IAgentContextMemoryService).append(...seed);
+        }
+      }
       agentId = created.id;
       profileName = profile.name;
       displayModel = binding.model;
@@ -308,6 +355,9 @@ export class SubagentTool implements ISubagentTool {
         process: runtime.process!,
         log: this.log,
       });
+      if (fork) {
+        promptText = `${FORK_CONTEXT_NOTICE}\n\n${promptText}`;
+      }
     }
 
     const runInBackground = args.run_in_background === true;
@@ -384,6 +434,13 @@ export class SubagentTool implements ISubagentTool {
 
       if (isResume && requestedProfileName !== undefined) {
         return { output: RESUME_WITH_TYPE_UNAVAILABLE, isError: true };
+      }
+
+      if (args.fork === true) {
+        const forkError = this.forkCompatibilityError(args);
+        if (forkError !== undefined) {
+          return { output: forkError, isError: true };
+        }
       }
 
       const allowBackground = this.canRunInBackground();
