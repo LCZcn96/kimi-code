@@ -294,12 +294,34 @@ export class AgentTranscriptProjector {
       `/tasks/{id}` actions resolve, and lifecycle events fold back to it. */
   private readonly subagentTaskIds = new Map<string, string>();
 
-  /** Pre-seed the association for a task registered before attach: a
-      foreground Agent run emits no `task.started` at all, so without this a
-      late-bound projector never learns the mapping and its lifecycle events
-      fall back to an uncancellable agent-id row. */
-  seedSubagentTask(agentId: string, taskId: string): void {
-    this.subagentTaskIds.set(agentId, taskId);
+  /** Pre-seed the association and the row for a task registered before
+      attach: a foreground Agent run emits no `task.started` at all, so
+      without this a late-bound projector never learns the mapping, shows no
+      cancellable row, and lets the terminal event invent foreground-wrong
+      defaults. Only in-flight tasks seed (a terminal one has no lifecycle
+      left to fold). */
+  seedSubagentTask(info: {
+    readonly taskId: string;
+    readonly agentId: string;
+    readonly description: string;
+    readonly status: string;
+    readonly detached: boolean;
+    readonly startedAt: number;
+  }): TranscriptOperation[] {
+    if (info.status !== 'running') return [];
+    this.subagentTaskIds.set(info.agentId, info.taskId);
+    const task = this.upsertTask(info.taskId, (prev) => ({
+      taskId: info.taskId,
+      kind: 'subagent',
+      state: 'running',
+      detached: info.detached,
+      description: info.description,
+      agentId: info.agentId,
+      outputTail: prev?.outputTail ?? '',
+      startedAt: prev?.startedAt ?? epochMsToIso(info.startedAt),
+      endedAt: prev?.endedAt,
+    }));
+    return [{ op: 'task.upsert', task }];
   }
   /** interaction id → the pending entity as last emitted (resolve spreads it). */
   private readonly interactions = new Map<string, TranscriptInteraction>();

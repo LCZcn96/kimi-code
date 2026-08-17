@@ -2127,7 +2127,15 @@ describe('bindSessionTranscript', () => {
     const agents = new FakeAgents();
     agents.add('main', {
       tasks: [
-        { taskId: 'task-9', kind: 'agent', agentId: 'agent-1', status: 'running', description: 'Inspect' },
+        {
+          taskId: 'task-9',
+          kind: 'agent',
+          agentId: 'agent-1',
+          status: 'running',
+          description: 'Inspect',
+          detached: false,
+          startedAt: 1_700_000_000_000,
+        },
       ],
     });
     const store = new TranscriptStore('s1');
@@ -2135,6 +2143,15 @@ describe('bindSessionTranscript', () => {
       store,
       fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
     );
+
+    // The seeded row is actionable immediately — foreground metadata intact.
+    expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
+      kind: 'subagent',
+      state: 'running',
+      detached: false,
+      description: 'Inspect',
+      agentId: 'agent-1',
+    });
 
     // Bound after the transient spawned of a FOREGROUND run (no task.started
     // is ever emitted for it): the completion must still fold into the
@@ -2144,6 +2161,7 @@ describe('bindSessionTranscript', () => {
     expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
       state: 'completed',
       resultSummary: 'done',
+      detached: false,
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
     binding.dispose();
