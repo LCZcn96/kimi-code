@@ -21,6 +21,7 @@
 import {
   IAgentLifecycleService,
   IAgentActivityView,
+  IAgentTaskService,
   IEventBus,
   ISessionMetadata,
   ISessionInteractionService,
@@ -157,6 +158,17 @@ export function bindSessionTranscript(
         // — `turn.upsert` is a whole-header replace downstream.
         turn: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
       });
+      // Tasks registered before this attach (foreground Agent runs emit no
+      // task.started at all) would otherwise route their subagent lifecycle
+      // to an uncancellable agent-id row.
+      for (const agent of agents.list()) {
+        const tasks = agent.accessor.get(IAgentTaskService)?.list() ?? [];
+        for (const info of tasks) {
+          if (info.kind === 'agent' && typeof info.agentId === 'string' && info.agentId.length > 0) {
+            projector.seedSubagentTask(info.agentId, info.taskId);
+          }
+        }
+      }
       projectors.set(agentId, projector);
     }
     return projector;

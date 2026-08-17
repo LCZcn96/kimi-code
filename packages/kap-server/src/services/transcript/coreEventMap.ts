@@ -293,6 +293,14 @@ export class AgentTranscriptProjector {
       carried the registration (`taskId`): the task row keys by the task id so
       `/tasks/{id}` actions resolve, and lifecycle events fold back to it. */
   private readonly subagentTaskIds = new Map<string, string>();
+
+  /** Pre-seed the association for a task registered before attach: a
+      foreground Agent run emits no `task.started` at all, so without this a
+      late-bound projector never learns the mapping and its lifecycle events
+      fall back to an uncancellable agent-id row. */
+  seedSubagentTask(agentId: string, taskId: string): void {
+    this.subagentTaskIds.set(agentId, taskId);
+  }
   /** interaction id → the pending entity as last emitted (resolve spreads it). */
   private readonly interactions = new Map<string, TranscriptInteraction>();
   /** promptId → the prompt queue entity as last emitted (`prompt.upsert` replaces). */

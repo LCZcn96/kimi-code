@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import {
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentTaskService,
   IEventBus,
   ISessionIndex,
   ISessionInteractionService,
@@ -2011,7 +2012,7 @@ describe('bindSessionTranscript', () => {
       this.disposeHandlers.add(cb);
       return { dispose: () => this.disposeHandlers.delete(cb) };
     }
-    add(id: string, opts?: { loopStatus?: unknown }): FakeAgentHandle {
+    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[] }): FakeAgentHandle {
       const bus = new FakeBus();
       const handle: FakeAgentHandle = {
         id,
@@ -2021,6 +2022,9 @@ describe('bindSessionTranscript', () => {
             if (token === IEventBus) return bus;
             if (token === IAgentLoopService) {
               return { status: () => opts?.loopStatus ?? { state: 'idle' } };
+            }
+            if (token === IAgentTaskService) {
+              return { list: () => opts?.tasks ?? [] };
             }
             return undefined;
           },
@@ -2116,6 +2120,32 @@ describe('bindSessionTranscript', () => {
     expect(descriptor).toBeDefined();
     expect(typeof descriptor?.disposedAt).toBe('string');
     expect(store.agents().find((a) => a.agentId === 'main')?.disposedAt).toBeUndefined();
+    binding.dispose();
+  });
+
+  it('seeds pre-attach Agent task mappings so a late-bound projector folds the lifecycle', () => {
+    const agents = new FakeAgents();
+    agents.add('main', {
+      tasks: [
+        { taskId: 'task-9', kind: 'agent', agentId: 'agent-1', status: 'running', description: 'Inspect' },
+      ],
+    });
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+
+    // Bound after the transient spawned of a FOREGROUND run (no task.started
+    // is ever emitted for it): the completion must still fold into the
+    // registered task row, not an uncancellable agent-id row.
+    agents.get('main')!.bus.emit(ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'done' }));
+
+    expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
+      state: 'completed',
+      resultSummary: 'done',
+    });
+    expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
     binding.dispose();
   });
 
