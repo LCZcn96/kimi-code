@@ -34,6 +34,7 @@ export type {
   GlobalFlagsFacade,
   GlobalHostFsFacade,
   GlobalKosongFacade,
+  GlobalMcpFacade,
   GlobalPluginsFacade,
   GlobalSessionsFacade,
   GlobalWorkspacesFacade,
@@ -140,5 +141,16 @@ export type {
   InteractionKind,
 } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
 export type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
+export type {
+  GlobalMcpServerConfig,
+  McpManagedServer,
+  McpServerAuthBeginResult,
+  McpServerAuthState,
+  McpServerAuthStatus,
+  McpServerInspection,
+  McpServerLocator,
+  McpServerTestResult,
+  McpServerTestTarget,
+} from '@moonshot-ai/agent-core-v2/app/mcpManagement/mcpManagement';
 export type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
 export type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';

@@ -22,6 +22,9 @@ import { IAgentLifecycleService } from '@moonshot-ai/agent-core-v2/session/agent
 import { ensureMainAgent } from '@moonshot-ai/agent-core-v2/session/agentLifecycle/mainAgent';
 import { ISessionInteractionService } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
 import { IEventBus } from '@moonshot-ai/agent-core-v2/app/event/eventBus';
+import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
+import { IConfigService } from '@moonshot-ai/agent-core-v2/app/config/config';
+import { mcpManagementFlag } from '@moonshot-ai/agent-core-v2/app/mcpManagement/flag';
 import type {
   FileMeta,
   GetResult,
@@ -62,7 +65,13 @@ export interface MemoryDispatcher {
 
 const REQUEST_INVALID = 40001;
 const NOT_FOUND = 40404;
+/** kap-server wire codes mirrored so memory/ipc surface the same numeric codes as `/api/v2/mcp`. */
+const MCP_SERVER_NOT_FOUND = 40408;
+const MCP_MANAGEMENT_DISABLED = 40928;
 const PROMPT_ID_CONFLICT = 40927;
+
+/** Wire name of the engine's `IMcpManagementService` decorator id. */
+const MCP_MANAGEMENT_SERVICE = 'mcpManagementService';
 
 /**
  * Engine file errors cross the facade as public `RPCError`s, never as the
@@ -73,6 +82,26 @@ const PROMPT_ID_CONFLICT = 40927;
 function rethrowFileErrorAsRpc(error: unknown): never {
   if (error instanceof Error2 && error.code === FileErrors.codes.FILE_NOT_FOUND) {
     throw new RPCError(NOT_FOUND, error.message, error.details);
+  }
+  throw error;
+}
+
+/**
+ * Same treatment for the MCP management plane: its coded rejections cross as
+ * `RPCError`s carrying the kap-server wire codes, so memory and ipc behave
+ * identically (a raw `Error2` would cross ipc as a generic 50001) and both
+ * match `/api/v2/mcp` — `mcp.server_not_found` → 40408, `request.invalid` /
+ * `config.invalid` → 40001.
+ */
+function rethrowMcpManagementErrorAsRpc(error: unknown): never {
+  if (error instanceof Error2) {
+    switch (error.code) {
+      case ErrorCodes.MCP_SERVER_NOT_FOUND:
+        throw new RPCError(MCP_SERVER_NOT_FOUND, error.message, error.details);
+      case ErrorCodes.REQUEST_INVALID:
+      case ErrorCodes.CONFIG_INVALID:
+        throw new RPCError(REQUEST_INVALID, error.message, error.details);
+    }
   }
   throw error;
 }
@@ -184,6 +213,26 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   return {
     async call(scope, service, method, args) {
       const resolved = await resolveScope(scope);
+      // The MCP management plane is flag-gated at the edge (the engine
+      // service itself stays ungated), mirroring kap-server's `/api/v2/mcp`
+      // preHandler gate. The check reads `IFlagService` per call so a
+      // config-flipped flag takes effect without a restart, and the disabled
+      // case crosses as an RPCError carrying the kap-server wire code (a raw
+      // Error2 would surface as 50001 over ipc).
+      if (service === MCP_MANAGEMENT_SERVICE) {
+        // Wait out the config-load race before reading the flag (the
+        // kap-server gate does the same): FlagService resolves config
+        // overrides through IConfigService, which bootstrap() does not
+        // await, so an immediately-issued call could otherwise misread a
+        // config-enabled flag as disabled.
+        await root.accessor.get(IConfigService).ready;
+        if (!root.accessor.get(IFlagService).enabled(mcpManagementFlag.id)) {
+          throw new RPCError(
+            MCP_MANAGEMENT_DISABLED,
+            `the MCP management plane is experimental and disabled; enable the '${mcpManagementFlag.id}' flag (${mcpManagementFlag.env}=1 or [experimental] ${mcpManagementFlag.id} = true)`,
+          );
+        }
+      }
       const instance = resolveService(resolved, service);
       // `fileService` adapts bytes ⇄ streams: the JSON wire cannot carry
       // `save`'s Readable source or `get`'s result stream, so both cross as
@@ -229,6 +278,9 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         const result = await (member as (...a: unknown[]) => unknown).apply(instance, clonedArgs);
         return wireClone(result);
       } catch (error) {
+        if (service === MCP_MANAGEMENT_SERVICE) {
+          rethrowMcpManagementErrorAsRpc(error);
+        }
         if (error instanceof Error2 && error.code === ErrorCodes.PROMPT_ID_CONFLICT) {
           throw new RPCError(PROMPT_ID_CONFLICT, error.message, error.details);
         }

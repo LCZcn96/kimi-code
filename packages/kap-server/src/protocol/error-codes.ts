@@ -132,6 +132,8 @@ export const ErrorCode = {
   RUNTIME_UNAVAILABLE: 40926,
   /** prompt_id 已在该 agent 的历史中使用 */
   PROMPT_ID_CONFLICT: 40927,
+  /** MCP 管理面未启用（mcp_management flag 关闭），同 40923 的 flag-未开先例 */
+  MCP_MANAGEMENT_DISABLED: 40928,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

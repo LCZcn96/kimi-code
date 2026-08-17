@@ -1,20 +1,16 @@
 /**
- * The v1 user-global MCP surface (`<KIMI_CODE_HOME>/mcp.json` CRUD plus the
- * standalone connection probe), rebuilt for the v2 client.
+ * The v1 user-global MCP file store (`<KIMI_CODE_HOME>/mcp.json` CRUD) plus
+ * the inline/reconnect config validation, rebuilt for the v2 client.
  *
- * Why a replica exists: agent-core-v2 only READS the user-global file (its
- * session config loader merges it with the project files); nothing in the
- * engine writes it, there is no app-scope MCP config service, and the v2
- * OAuth orchestrator / connection manager live behind the session scope — so
- * the store, the `require*` guards, and the probe result shaping are ported
- * here byte-for-byte from v1 (`agent-core/src/mcp/global-config.ts` and the
- * helpers at the bottom of `agent-core/src/rpc/core-impl.ts`). Validation
- * keeps using v1's own `McpServerConfigSchema` (the v2 schema dropped the
- * `auth: 'oauth'` marker field and would strip it on write). The moving
- * parts that DO have v2 counterparts — the OAuth service and the connection
- * manager — are the v2 engine's own classes, instantiated by the caller
- * (`sdk-rpc-client-v2.ts`); the v2 credential store persists to the same
- * on-disk layout as v1 (`<home>/credentials/mcp/<key>-*.json`).
+ * The unified management plane (CRUD facade, connection probe, inspection,
+ * OAuth orchestration) delegates to the engine's App-scope
+ * `IMcpManagementService`; what remains here serves the session-level MCP
+ * methods of `sdk-rpc-client-v2.ts`, which ride the session's own connection
+ * manager and have no engine service behind them: the store persists
+ * `addSessionMcpServer`'s `persist: true` adds byte-for-byte like v1
+ * (`agent-core/src/mcp/global-config.ts`), and the validators keep v1's exact
+ * error text for the session RPC paths. Validation keeps using v1's own
+ * `McpServerConfigSchema`.
  */
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -24,20 +20,9 @@ import {
   KimiError,
   McpServerConfigSchema,
   type GlobalMcpServerConfig,
-  type McpRemoteServerConfig,
   type McpServerConfig,
 } from '@moonshot-ai/agent-core';
-import type { McpConnectionManager } from '@moonshot-ai/agent-core-v2/mcpCore/connection-manager';
 import { atomicWrite } from '@moonshot-ai/agent-core-v2/_base/utils/fs';
-
-import type {
-  AppMcpServerConfig,
-  AppMcpServerDescriptor,
-  AppMcpServerInspection,
-  GlobalMcpServerAuthState,
-  McpServerLocator,
-  McpTestResult,
-} from '#/types';
 
 interface GlobalMcpConfigFile {
   readonly raw: Record<string, unknown>;
@@ -149,115 +134,6 @@ export class GlobalMcpConfigStore {
   }
 }
 
-/** Byte-identical port of v1's `requireRemoteMcpConfig` guard. */
-export function requireRemoteMcpConfig(
-  name: string,
-  config: McpServerConfig,
-): McpRemoteServerConfig {
-  if (config.transport !== 'stdio') return config;
-  throw new KimiError(
-    ErrorCodes.REQUEST_INVALID,
-    `MCP server "${name}" does not use a remote transport`,
-  );
-}
-
-/** Byte-identical port of v1's `requireOAuthMcpConfig` guard. */
-export function requireOAuthMcpConfig(
-  name: string,
-  input: McpServerConfig,
-): McpRemoteServerConfig {
-  const config = requireRemoteMcpConfig(name, input);
-  if (config.bearerTokenEnvVar !== undefined) {
-    throw new KimiError(
-      ErrorCodes.REQUEST_INVALID,
-      `MCP server "${name}" uses a static bearer token`,
-    );
-  }
-  if (config.headers !== undefined && config.auth !== 'oauth') {
-    throw new KimiError(
-      ErrorCodes.REQUEST_INVALID,
-      `MCP server "${name}" uses static headers and is not marked for OAuth`,
-    );
-  }
-  return config;
-}
-
-/** Byte-identical port of v1's `mcpServerId`. */
-export function mcpServerId(locator: McpServerLocator): string {
-  if (locator.source === 'global') return `global:${encodeURIComponent(locator.name)}`;
-  return `plugin:${encodeURIComponent(locator.pluginId)}:${encodeURIComponent(locator.serverName)}`;
-}
-
-/** Byte-identical port of v1's `describeMcpServerLocator`. */
-export function describeMcpServerLocator(locator: McpServerLocator): string {
-  if (locator.source === 'global') return locator.name;
-  return `${locator.pluginId}/${locator.serverName}`;
-}
-
-/** Inspection-time descriptor: the wire shape but with the full config. */
-export type AppMcpServerRuntimeDescriptor = Omit<AppMcpServerDescriptor, 'config'> & {
-  readonly config: McpServerConfig;
-};
-
-export type AppMcpServerRuntimeInspection = AppMcpServerRuntimeDescriptor &
-  Pick<AppMcpServerInspection, 'authStatus' | 'checkedAt' | 'error'>;
-
-/** Byte-identical port of v1's `sanitizeAppMcpServerInspection`. */
-export function sanitizeAppMcpServerInspection(
-  server: AppMcpServerRuntimeInspection,
-): AppMcpServerInspection {
-  return { ...server, config: sanitizeAppMcpServerConfig(server.config) };
-}
-
-/** Byte-identical port of v1's `sanitizeAppMcpServerConfig`. */
-export function sanitizeAppMcpServerConfig(config: McpServerConfig): AppMcpServerConfig {
-  if (config.transport === 'stdio') {
-    const { env, ...safe } = config;
-    return env === undefined ? safe : { ...safe, envKeys: Object.keys(env).toSorted() };
-  }
-  const { headers, ...safe } = config;
-  return headers === undefined ? safe : { ...safe, headerKeys: Object.keys(headers).toSorted() };
-}
-
-/** Byte-identical port of v1's `selectAppMcpServerDescriptors`. */
-export function selectAppMcpServerDescriptors(
-  catalog: readonly AppMcpServerRuntimeDescriptor[],
-  targets?: readonly McpServerLocator[],
-): readonly AppMcpServerRuntimeDescriptor[] {
-  if (targets === undefined) return catalog;
-  const byId = new Map(catalog.map((server) => [server.serverId, server]));
-  return targets.map((target) => {
-    const server = byId.get(mcpServerId(target));
-    if (server !== undefined) return server;
-    throw new KimiError(
-      ErrorCodes.MCP_SERVER_NOT_FOUND,
-      `MCP server "${describeMcpServerLocator(target)}" was not found`,
-    );
-  });
-}
-
-/**
- * Byte-identical port of v1's `configuredMcpAuthState`: states decidable
- * without connecting — anything pinned (stdio, bearer token, static
- * non-OAuth headers) or disabled never enters the OAuth probe.
- */
-export function configuredMcpAuthState(
-  server: AppMcpServerRuntimeDescriptor,
-): GlobalMcpServerAuthState | undefined {
-  if (!server.enabled || server.config.enabled === false) return 'not-applicable';
-  if (server.config.transport === 'stdio') return 'not-applicable';
-  if (server.config.bearerTokenEnvVar !== undefined) return 'bearer-token';
-  if (server.config.headers !== undefined && server.config.auth !== 'oauth') {
-    return 'not-applicable';
-  }
-  return undefined;
-}
-
-/** Byte-identical port of v1's `isOAuthProbeCandidate`. */
-export function isOAuthProbeCandidate(server: AppMcpServerRuntimeDescriptor): boolean {
-  return configuredMcpAuthState(server) === undefined;
-}
-
 /** Byte-identical port of v1's `mcpConfigWithoutName`. */
 export function mcpConfigWithoutName(server: GlobalMcpServerConfig): McpServerConfig {
   const { name: _name, ...config } = server;
@@ -296,32 +172,6 @@ export function parseReconnectMcpServerConfig(
     );
   }
   return parsed.data;
-}
-
-/**
- * Byte-identical port of v1's `standaloneMcpTestResult`, typed against the
- * v2 engine's connection manager (the probe's `get` / `resolved` reads are
- * the same on both ports of the manager).
- */
-export function standaloneMcpTestResult(
-  name: string,
-  manager: McpConnectionManager,
-): McpTestResult {
-  const entry = manager.get(name);
-  if (entry?.status !== 'connected') {
-    return {
-      success: false,
-      output:
-        entry?.error ?? `MCP server "${name}" finished with status ${entry?.status ?? 'unknown'}`,
-    };
-  }
-  const tools = manager.resolved(name)?.rawTools ?? [];
-  const lines = [
-    `Connected to MCP server "${name}".`,
-    `Available tools: ${tools.length}`,
-    ...tools.map((tool) => `- ${tool.name}${tool.description ? `: ${tool.description}` : ''}`),
-  ];
-  return { success: true, output: lines.join('\n') };
 }
 
 function parseServerInput(server: GlobalMcpServerConfig): GlobalMcpServerConfig {

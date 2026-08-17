@@ -5,42 +5,46 @@
  * Resolves the handler's effective MCP server set from exactly two sources —
  * the MCP config files (`resolveMcpJsonPaths`: user `mcp.json`, project-root
  * `.mcp.json`, `.kimi-code/mcp.json` — read through the os `hostFs`) and the
- * enabled plugins; on a name collision the file config wins, and when one
- * source's server vanishes the same-named entry from the other source takes
- * over. The two project-level files are gated by `workspaceTrust`: while the
- * workspace is untrusted they are skipped (the user file and plugin
- * contributions still load), and a trust flip triggers the same reload path
- * as a file edit, so trusting connects the project servers and untrusting
- * drops them. The config files are watched (the user file directly, the
- * project root recursively pruned to the two project candidates) and plugin
- * contributions follow `plugins.onDidReload`; every re-resolve recomputes the
- * merged view and publishes the fingerprint diff through `onDidChange`, so a
- * config edit or a plugin installed, enabled or reloaded AFTER the handler
- * materialized still reaches the connection side. Reloads are debounced and
- * serialized on a mutation tail; an outright initial-load or reload failure
- * is logged, leaving the last published snapshot in place. The initial
- * resolve waits for `config.ready` so the file/plugin read and the `[mcp]`
- * section read are deterministic. Bound at Workspace scope.
+ * enabled plugins; on a name collision an enabled plugin entry wins over the
+ * file layers, and when one source's server vanishes the same-named entry
+ * from the other source takes over. The two project-level files are gated by
+ * `workspaceTrust`: while the workspace is untrusted they are skipped (the
+ * user file and plugin contributions still load), and a trust flip triggers
+ * the same reload path as a file edit, so trusting connects the project
+ * servers and untrusting drops them. The config files are watched (the user
+ * file directly, the project root recursively pruned to the two project
+ * candidates) and plugin contributions follow `plugins.onDidReload`;
+ * management-plane writes to the user file arrive immediately through the
+ * `mcpConfig` store's `onDidWrite` instead of waiting out the watch
+ * debounce; every re-resolve recomputes the merged view and publishes the
+ * fingerprint diff through `onDidChange`, so a config edit or a plugin
+ * installed, enabled or reloaded AFTER the handler materialized still
+ * reaches the connection side. Reloads are debounced and serialized on a
+ * mutation tail; an outright initial-load or reload failure is logged,
+ * leaving the last published snapshot in place. The initial resolve waits
+ * for `config.ready` so the file/plugin read and the `[mcp]` section read
+ * are deterministic. Bound at Workspace scope.
  */
+
+import { dirname } from 'pathe';
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
-import { TimeoutTimer } from '#/_base/utils/timer';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
-import { dirname } from 'pathe';
-
-import type { McpServerConfig } from '#/mcpCore/config-schema';
-import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
+import { TimeoutTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { loadMcpServers, resolveMcpJsonPaths } from '#/app/mcpConfig/configLoader';
+import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
+import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 
-import { loadMcpServers, resolveMcpJsonPaths } from './internal/config-loader';
 import {
   IWorkspaceMcpConfigService,
   type McpServersChange,
@@ -71,6 +75,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IWorkspaceTrust private readonly trust: IWorkspaceTrust,
+    @IMcpConfigStore mcpConfigStore: IMcpConfigStore,
   ) {
     super();
     this.ready = this.initialize().catch((error: unknown) => {
@@ -87,6 +92,15 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
       this.trust.onDidChange(() => {
         void this.reloadFileServers().catch((error) => {
           this.log.warn(`mcp trust reload failed: ${String(error)}`);
+        });
+      }),
+    );
+    this._register(
+      mcpConfigStore.onDidWrite(() => {
+        // A management-plane write is already durable here, so skip the
+        // watch debounce and reload immediately.
+        void this.reloadFileServers().catch((error) => {
+          this.log.warn(`mcp config reload after management write failed: ${String(error)}`);
         });
       }),
     );
@@ -129,7 +143,10 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   }
 
   private merged(): Record<string, McpServerConfig> {
-    return { ...Object.fromEntries(this.pluginServers), ...Object.fromEntries(this.fileServers) };
+    // An enabled plugin entry wins over the file layers, matching the
+    // management plane's runtime resolution; when the plugin entry vanishes
+    // (disable / remove) the same-named file entry takes back over.
+    return { ...Object.fromEntries(this.fileServers), ...Object.fromEntries(this.pluginServers) };
   }
 
   private async watchConfigFiles(): Promise<void> {
@@ -196,7 +213,9 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
 
   private publishIfChanged(): void {
     const next = this.merged();
-    const upsert: Record<string, McpServerConfig> = {};
+    // Null-prototype accumulator: a server literally named `__proto__` would
+    // otherwise hit the prototype setter and silently vanish from the diff.
+    const upsert: Record<string, McpServerConfig> = Object.create(null);
     const remove: string[] = [];
     for (const [name, config] of Object.entries(next)) {
       const previous = this.current[name];
@@ -228,4 +247,3 @@ function sortKeysDeep(value: unknown): unknown {
   }
   return value;
 }
-

@@ -11,7 +11,9 @@ import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { IEventService } from '#/app/event/event';
 import { IFlagService } from '#/app/flag/flag';
 import { IGitService } from '#/app/git/git';
-import { IMcpOAuthStore } from '#/app/mcpConfig/oauthStore';
+import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
+import type { McpOAuthService } from '#/mcpCore/oauth/service';
+import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { IPluginService } from '#/app/plugin/plugin';
 import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -64,7 +66,8 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @ILogService private readonly log: ILogService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
-    @IMcpOAuthStore private readonly oauthStore: IMcpOAuthStore,
+    @IMcpOAuthService private readonly oauth: McpOAuthService,
+    @IMcpConfigStore private readonly configStore: IMcpConfigStore,
     @IPluginService private readonly plugins: IPluginService,
     @IProviderService private readonly modelProviders: IProviderService,
     @ref(ISessionManager) private readonly sessionManager: LiveRef<ISessionManager>,
@@ -191,7 +194,8 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
         git: this.git,
         identity: this.identity,
         log: this.log,
-        oauthStore: this.oauthStore,
+        oauth: this.oauth,
+        configStore: this.configStore,
         plugins: this.plugins,
         sessionManager: this.sessionManager,
         agentProfiles: this.agentProfiles,

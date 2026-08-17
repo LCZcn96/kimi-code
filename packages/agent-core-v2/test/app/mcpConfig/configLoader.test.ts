@@ -3,7 +3,7 @@
  *
  * Exercises the real loader against temporary JSON files. Run with `pnpm
  * --filter @moonshot-ai/agent-core-v2 exec vitest run
- * test/workspace/workspaceMcpConfig/config-loader.test.ts`.
+ * test/app/mcpConfig/configLoader.test.ts`.
  */
 
 import { mkdtempSync } from 'node:fs';
@@ -13,7 +13,7 @@ import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ErrorCodes, Error2 } from '#/errors';
-import { loadMcpServers, resolveMcpJsonPaths } from '#/workspace/workspaceMcpConfig/internal/config-loader';
+import { loadMcpServers, resolveMcpJsonPaths } from '#/app/mcpConfig/configLoader';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 const fs = new HostFileSystem();

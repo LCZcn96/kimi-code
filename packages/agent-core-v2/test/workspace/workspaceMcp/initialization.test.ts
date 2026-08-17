@@ -22,7 +22,9 @@ import { Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
-import { IMcpOAuthStore } from '#/app/mcpConfig/oauthStore';
+import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
+import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
+import { McpOAuthService } from '#/mcpCore/oauth/service';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
@@ -85,7 +87,11 @@ describe('Workspace MCP initialization', () => {
           enabledMcpServers: async () => ({}),
           onDidReload: Event.None as Event<ReloadSummary>,
         });
-        reg.definePartialInstance(IMcpOAuthStore, createMemoryMcpOAuthStore());
+        reg.definePartialInstance(
+          IMcpOAuthService,
+          new McpOAuthService({ store: createMemoryMcpOAuthStore() }),
+        );
+        reg.definePartialInstance(IMcpConfigStore, { onDidWrite: Event.None as Event<void> });
         reg.defineInstance(ILogService, stubLog());
         reg.defineInstance(ITelemetryService, noopTelemetryService);
         const runtime = Object.assign(

@@ -324,6 +324,17 @@ export class McpConnectionManager implements McpConnectionView {
     return work;
   }
 
+  /**
+   * {@link reconnectAndJoin} queued behind any in-flight reconnect: a
+   * credential that lands while a reconnect is already running triggers one
+   * more pass instead of being absorbed by the stale run.
+   */
+  async reconnectAfterCurrent(name: string): Promise<void> {
+    const existing = this.inFlightReconnects.get(name);
+    if (existing !== undefined) await existing.catch(() => undefined);
+    await this.reconnectAndJoin(name);
+  }
+
   async shutdown(): Promise<void> {
     const entries = Array.from(this.entries.values());
     this.entries.clear();
@@ -590,9 +601,10 @@ function stderrTail(client: RuntimeMcpClient | undefined): string | undefined {
 
 /**
  * Structural equality for effective configs, backing the idempotent-connect
- * guard (config reconcilers and explicit callers may issue the same upsert).
+ * guard (config reconcilers and explicit callers may issue the same upsert)
+ * and the management plane's change detection.
  */
-function mcpServerConfigsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
+export function mcpServerConfigsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
   return stableConfigJson(a) === stableConfigJson(b);
 }
 

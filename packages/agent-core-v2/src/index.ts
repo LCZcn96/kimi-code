@@ -436,6 +436,16 @@ export {
   type McpSection,
 } from '#/app/mcpConfig/configSection';
 export * from '#/app/mcpConfig/oauthStore';
+export { IMcpConfigStore } from '#/app/mcpConfig/configStore';
+import '#/app/mcpConfig/configStore';
+export { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
+import '#/app/mcpConfig/oauthService';
+export * from '#/app/mcpRegistry/mcpRegistry';
+import '#/app/mcpRegistry/mcpRegistryService';
+export * from '#/app/mcpManagement/mcpManagement';
+export { McpManagementErrors } from '#/app/mcpManagement/errors';
+import '#/app/mcpManagement/flag';
+import '#/app/mcpManagement/mcpManagementService';
 export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
 export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
 export * from '#/workspace/workspaceMcp/workspaceMcp';

@@ -39,6 +39,16 @@
  * process — so a stateful stdio server is shared by concurrent sessions of
  * the workspace rather than owned by one session. Bound at Workspace scope.
  *
+ * The OAuth orchestrator is the App-scope `IMcpOAuthService` shared by every
+ * handler and overlay: this service subscribes its credential events and
+ * reconciles the affected manager entries — a completed login reconnects a
+ * `needs-auth` / `failed` entry, a reset or a failed proactive refresh flips
+ * a live connection back to `needs-auth` (the reconnect hits a 401) instead
+ * of leaving it doomed-but-connected, and an entry still performing its
+ * initial connect defers the reconnect until it settles, so a credential
+ * written mid-initialization is not lost. Each session overlay subscribes
+ * the same events against its own manager for the overlay's lifetime.
+ *
  * The client name announced to MCP servers — on initialize and on OAuth
  * dynamic registration — is the identity snapshot's slug. Every manager it
  * builds, the shared one and each session overlay, gates its connects on
@@ -48,17 +58,17 @@
  * name.
  */
 
-import { Disposable } from '#/_base/di/lifecycle';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { Disposable } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
-
-import { McpConnectionManager, type McpConnectionView } from '#/mcpCore/connection-manager';
-import type { McpServerConfig } from '#/mcpCore/config-schema';
-import { McpOAuthService } from '#/mcpCore/oauth/service';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
-import { IMcpOAuthStore } from '#/app/mcpConfig/oauthStore';
-import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ITelemetryService } from '#/app/telemetry/telemetry';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
+import { McpConnectionManager, type McpConnectionView } from '#/mcpCore/connection-manager';
+import type { McpOAuthEvent, McpOAuthService } from '#/mcpCore/oauth/service';
+import { canonicalMcpOAuthResource } from '#/mcpCore/oauth/store';
 import { ISessionEphemeralMcpServers } from '#/session/mcp/ephemeralMcpServers';
 import { MergedMcpConnectionView } from '#/session/mcp/mergedConnectionView';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
@@ -93,7 +103,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     @IWorkspaceContext workspace: IWorkspaceContext,
     @IRuntimeResolver private readonly runtimeResolver: IRuntimeResolver,
     @IWorkspaceMcpConfigService private readonly mcpConfig: IWorkspaceMcpConfigService,
-    @IMcpOAuthStore oauthStore: IMcpOAuthStore,
+    @IMcpOAuthService oauthService: McpOAuthService,
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
@@ -103,10 +113,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     this.sessionLifecycle = sessionLifecycle;
     this.stdioCwd = workspace.cwd;
     this.workspaceId = workspace.workspaceId;
-    this.oauthService = new McpOAuthService({
-      store: oauthStore,
-      resolveClientName: this.resolveClientName,
-    });
+    this.oauthService = oauthService;
     this.manager = new McpConnectionManager({
       log: this.log,
       oauthService: this.oauthService,
@@ -123,6 +130,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         this.scheduleApply(change);
       }),
     );
+    this._register({ dispose: this.oauthEventSubscription(this.manager) });
     this.attachSessionLifecycle();
     this._register(sessionLifecycle.onDidChange(() => this.attachSessionLifecycle()));
     this.ready = this.initialize().catch((error: unknown) => {
@@ -184,6 +192,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       .catch((error: unknown) => {
         this.log.error('session mcp overlay initial load failed', { error });
       });
+    const unsubscribeOAuth = this.oauthEventSubscription(sessionManager);
     const view = new MergedMcpConnectionView(
       this.manager,
       sessionManager,
@@ -203,8 +212,72 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         // at construction, so they need no window at all.
         isBaselineServer: this.sessionBaseline(this.manager, this.ready, Object.keys(servers)),
       },
-      shutdown: () => sessionManager.shutdown(),
+      shutdown: () => {
+        unsubscribeOAuth();
+        return sessionManager.shutdown();
+      },
     };
+  }
+
+  /**
+   * Subscribe a manager to the shared OAuth service's credential events,
+   * returning the unsubscribe. A completed login reconnects a `needs-auth` /
+   * `failed` entry; a reset or a failed proactive refresh flips a live
+   * connection back to `needs-auth` (the reconnect hits a 401) instead of
+   * leaving it doomed-but-connected.
+   */
+  private oauthEventSubscription(manager: McpConnectionManager): () => void {
+    return this.oauthService.onEvent((event) => {
+      void this.handleMcpOAuthEvent(manager, event).catch((error: unknown) => {
+        this.log.warn(`mcp oauth event handling failed: ${String(error)}`);
+      });
+    });
+  }
+
+  private async handleMcpOAuthEvent(
+    manager: McpConnectionManager,
+    event: McpOAuthEvent,
+  ): Promise<void> {
+    // Client/verifier/discovery invalidations are flow-local; only token-level
+    // changes move connections.
+    if (event.type === 'tokens-invalidated' && event.scope !== 'tokens' && event.scope !== 'all') {
+      return;
+    }
+    const entry = manager.get(event.serverName);
+    if (entry === undefined) return;
+    // The credential is keyed by name + canonical URL: if this manager's
+    // entry points at a different URL now, the event is not about it.
+    const serverUrl = manager.getRemoteServerUrl(event.serverName);
+    if (serverUrl === undefined || canonicalMcpOAuthResource(serverUrl) !== event.serverUrl) return;
+    if (event.type === 'tokens-invalidated') {
+      // Drop the cached provider so the reconnect starts from clean state.
+      this.oauthService.forgetProvider(event.serverName, event.serverUrl);
+    }
+    if (entry.status === 'disabled' || entry.status === 'removed') return;
+    if (entry.status === 'pending') {
+      await new Promise<void>((resolve, reject) => {
+        const unsubscribe = manager.onStatusChange((next) => {
+          if (next.name !== event.serverName || next.status === 'pending') return;
+          unsubscribe();
+          if (next.status === 'disabled' || next.status === 'removed') {
+            resolve();
+            return;
+          }
+          void manager.reconnectAfterCurrent(event.serverName).then(resolve, reject);
+        });
+      });
+      return;
+    }
+    if (
+      event.type === 'tokens-saved' &&
+      entry.status !== 'needs-auth' &&
+      entry.status !== 'failed'
+    ) {
+      return;
+    }
+    // A failed proactive refresh only matters to a live connection.
+    if (event.type === 'refresh-failed' && entry.status !== 'connected') return;
+    await manager.reconnectAndJoin(event.serverName);
   }
 
   private sessionBaseline(
@@ -288,4 +361,3 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     }
   }
 }
-

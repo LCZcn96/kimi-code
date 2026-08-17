@@ -37,6 +37,16 @@ import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/cata
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
 
 import type { McpServerConfig } from '../../contract/mcp.js';
+import type {
+  GlobalMcpServerConfig,
+  McpManagedServer,
+  McpServerAuthBeginResult,
+  McpServerAuthStatus,
+  McpServerInspection,
+  McpServerLocator,
+  McpServerTestResult,
+  McpServerTestTarget,
+} from '@moonshot-ai/agent-core-v2/app/mcpManagement/mcpManagement';
 import type { AnonymousProviderInput, GenerateEvent, GenerateInput, GenerateParams, ProviderInput } from './kosong-types.js';
 import type {
   PluginCommandDef,
@@ -222,6 +232,43 @@ export interface GlobalHostFsFacade {
   home(): Promise<FsHomeResponse>;
 }
 
+/**
+ * The unified MCP management plane (engine `IMcpManagementService`, App
+ * scope): CRUD on the user-level `mcp.json`, a connection test probe, the
+ * locator-addressed inspection catalog, the auth-status surface, and the
+ * locator-addressed OAuth flow operations. Gated by the `mcp_management`
+ * experimental flag — while disabled, every method rejects with
+ * `RPCError(40928)` on every transport (and `/api/v2/mcp` answers the same
+ * code over HTTP).
+ */
+export interface GlobalMcpFacade {
+  list(input?: { cwd?: string }): Promise<readonly McpManagedServer[]>;
+  get(input: { name: string; cwd?: string }): Promise<McpManagedServer>;
+  /** Add a user-level entry; a same-named read-only entry rejects. Returns the refreshed list. */
+  add(input: { server: GlobalMcpServerConfig }): Promise<readonly McpManagedServer[]>;
+  /** Replace a user-level entry; read-only entries reject. Returns the refreshed list. */
+  update(input: { server: GlobalMcpServerConfig }): Promise<readonly McpManagedServer[]>;
+  /** Remove a user-level entry; read-only entries reject. Returns the refreshed list. */
+  remove(input: { name: string }): Promise<readonly McpManagedServer[]>;
+  /** Probe a real connection: a registry `name`, or an inline `server` config as-is. */
+  test(input: McpServerTestTarget): Promise<McpServerTestResult>;
+  /** The locator-addressed catalog plus a batched real-connection probe of OAuth candidates. */
+  inspect(input?: {
+    targets?: readonly McpServerLocator[];
+  }): Promise<readonly McpServerInspection[]>;
+  /** Per-server OAuth state; offline by default, `verify: true` probes a real connection. */
+  authStatuses(input?: {
+    cwd?: string;
+    verify?: boolean;
+  }): Promise<readonly McpServerAuthStatus[]>;
+  /** Resolve a legacy name-only auth target to its unambiguous locator. */
+  resolveByName(input: { name: string }): Promise<McpServerLocator>;
+  beginAuth(input: { locator: McpServerLocator }): Promise<McpServerAuthBeginResult>;
+  completeAuth(input: { flowId: string; timeoutMs?: number }): Promise<void>;
+  cancelAuth(input: { flowId: string }): Promise<void>;
+  resetAuth(input: { locator: McpServerLocator }): Promise<void>;
+}
+
 /** One downloaded upload: its metadata plus the buffered bytes. */
 export interface FileDownload {
   readonly meta: FileMeta;
@@ -273,6 +320,7 @@ export interface GlobalFacade {
   readonly capabilities: GlobalCapabilitiesFacade;
   readonly hostFs: GlobalHostFsFacade;
   readonly files: GlobalFilesFacade;
+  readonly mcp: GlobalMcpFacade;
   env(): Promise<KlientEnvInfo>;
 }
 
@@ -506,6 +554,50 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         return { meta: wire.meta, data: Buffer.from(wire.data, 'base64') };
       },
       delete: (fileId) => call('fileService', 'delete', [fileId]) as Promise<void>,
+    },
+
+    mcp: {
+      list: (input) =>
+        call('mcpManagementService', 'listServers', [
+          input === undefined ? undefined : { cwd: input.cwd },
+        ]) as Promise<readonly McpManagedServer[]>,
+      get: ({ name, cwd }) =>
+        call('mcpManagementService', 'getServer', [
+          name,
+          cwd === undefined ? undefined : { cwd },
+        ]) as Promise<McpManagedServer>,
+      add: ({ server }) =>
+        call('mcpManagementService', 'addServer', [server]) as Promise<
+          readonly McpManagedServer[]
+        >,
+      update: ({ server }) =>
+        call('mcpManagementService', 'updateServer', [server]) as Promise<
+          readonly McpManagedServer[]
+        >,
+      remove: ({ name }) =>
+        call('mcpManagementService', 'removeServer', [name]) as Promise<
+          readonly McpManagedServer[]
+        >,
+      test: (target) =>
+        call('mcpManagementService', 'testServer', [target]) as Promise<McpServerTestResult>,
+      inspect: (input) =>
+        call('mcpManagementService', 'inspectServers', [input?.targets]) as Promise<
+          readonly McpServerInspection[]
+        >,
+      authStatuses: (input) =>
+        call('mcpManagementService', 'listAuthStatuses', [
+          input === undefined ? undefined : { cwd: input.cwd, verify: input.verify },
+        ]) as Promise<readonly McpServerAuthStatus[]>,
+      resolveByName: ({ name }) =>
+        call('mcpManagementService', 'resolveServerByName', [name]) as Promise<McpServerLocator>,
+      beginAuth: ({ locator }) =>
+        call('mcpManagementService', 'beginServerAuth', [locator]) as Promise<McpServerAuthBeginResult>,
+      completeAuth: ({ flowId, timeoutMs }) =>
+        call('mcpManagementService', 'completeServerAuth', [{ flowId, timeoutMs }]) as Promise<void>,
+      cancelAuth: ({ flowId }) =>
+        call('mcpManagementService', 'cancelServerAuth', [{ flowId }]) as Promise<void>,
+      resetAuth: ({ locator }) =>
+        call('mcpManagementService', 'resetServerAuth', [locator]) as Promise<void>,
     },
 
     env,

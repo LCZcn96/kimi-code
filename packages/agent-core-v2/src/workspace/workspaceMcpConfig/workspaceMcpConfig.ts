@@ -5,7 +5,8 @@
  * Defines `IWorkspaceMcpConfigService`, the single source of truth for "which
  * MCP servers should this workspace run": it resolves the MCP config files
  * (user `mcp.json`, project-root `.mcp.json`, `.kimi-code/mcp.json`) and the
- * enabled plugins' contributions — on a name collision the file config wins —
+ * enabled plugins' contributions — on a name collision an enabled plugin
+ * entry wins over the file layers —
  * with the two project-level files gated by `workspaceTrust` (an untrusted
  * workspace gets the user file and plugin contributions only), then tracks
  * both sources (fs watch on the config files,
@@ -20,7 +21,6 @@
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
-
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 export interface McpServersChange {

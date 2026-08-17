@@ -18,17 +18,17 @@
 
 import { KIMI_CODE_PROVIDER_NAME } from '@moonshot-ai/kimi-code-oauth';
 
+import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Service } from '#/_base/di/service';
 import { Emitter, type Event } from '#/_base/event';
-import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { BugIndicatingError, Error2, PluginErrors } from '#/errors';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { IProviderService } from '#/kosong/provider/provider';
-import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import type { HookDef } from '#/agent/externalHooks/types';
-import type { McpServerConfig } from '#/mcpCore/config-schema';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { LifecycleScope } from '#/app/scopes';
+import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import type { SkillRoot } from '#/app/skillCatalog/types';
+import { BugIndicatingError, Error2, PluginErrors } from '#/errors';
+import { IProviderService } from '#/kosong/provider/provider';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import { PluginManager } from './manager';
 import {
@@ -45,6 +45,7 @@ import type {
   PluginCommandDef,
   PluginInfo,
   PluginAgentRoot,
+  PluginMcpServerEntry,
   PluginMutation,
   PluginMutationSummary,
   PluginSummary,
@@ -208,6 +209,21 @@ export class PluginService extends Service implements IPluginService {
     });
   }
 
+  mcpServerEntries(): Promise<readonly PluginMcpServerEntry[]> {
+    // Management-plane read: a corrupt plugin state must fail loudly here
+    // instead of degrading to an empty list — a management mutation guarded
+    // on this view could otherwise shadow a read-only plugin server while
+    // the plugin contributions are unknown.
+    return this.runManagementRead(async () => {
+      const entries = this.manager.mcpServerEntries();
+      if (!entries.some((entry) => entry.config.transport === 'stdio')) {
+        return entries;
+      }
+      const managedEnv = await this.managedKimiCodeEnvForPlugins();
+      return withManagedKimiPluginEnvOnEntries(entries, managedEnv);
+    });
+  }
+
   enabledHooks(): Promise<readonly HookDef[]> {
     return this.runConsumptionRead([], async () => this.manager.enabledHooks());
   }
@@ -283,8 +299,7 @@ export class PluginService extends Service implements IPluginService {
     const envBaseUrl = this.envBaseUrl;
     const envOAuthHost = this.envOAuthHost;
     const hasEnvOverride = envBaseUrl !== undefined || envOAuthHost !== undefined;
-    const baseUrl =
-      envBaseUrl !== undefined ? envBaseUrl.replace(/\/+$/, '') : provider?.baseUrl;
+    const baseUrl = envBaseUrl !== undefined ? envBaseUrl.replace(/\/+$/, '') : provider?.baseUrl;
     const oauthHost = hasEnvOverride ? envOAuthHost : provider?.oauth?.oauthHost;
     const env: Record<string, string> = {};
     if (baseUrl !== undefined) env[KIMI_CODE_BASE_URL_ENV] = baseUrl;
@@ -301,11 +316,21 @@ function withManagedKimiPluginEnv(
   const out: Record<string, McpServerConfig> = {};
   for (const [name, server] of Object.entries(pluginServers)) {
     out[name] =
-      server.transport === 'stdio'
-        ? { ...server, env: { ...server.env, ...managedEnv } }
-        : server;
+      server.transport === 'stdio' ? { ...server, env: { ...server.env, ...managedEnv } } : server;
   }
   return out;
+}
+
+function withManagedKimiPluginEnvOnEntries(
+  entries: readonly PluginMcpServerEntry[],
+  managedEnv: Record<string, string>,
+): readonly PluginMcpServerEntry[] {
+  if (Object.keys(managedEnv).length === 0) return entries;
+  return entries.map((entry) =>
+    entry.config.transport === 'stdio'
+      ? { ...entry, config: { ...entry.config, env: { ...entry.config.env, ...managedEnv } } }
+      : entry,
+  );
 }
 
 registerScopedService(

@@ -10,8 +10,8 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
 import type { HookDef } from '#/agent/externalHooks/types';
-import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type { SkillRoot } from '#/app/skillCatalog/types';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import type {
   EnabledPluginSessionStart,
@@ -19,6 +19,7 @@ import type {
   PluginAgentRoot,
   PluginCommandDef,
   PluginInfo,
+  PluginMcpServerEntry,
   PluginMutationSummary,
   PluginSummary,
   PluginUpdateStatus,
@@ -65,6 +66,7 @@ export interface IPluginService {
   enabledSessionStarts(): Promise<readonly EnabledPluginSessionStart[]>;
   enabledSystemPrompts(): Promise<readonly EnabledPluginSystemPrompt[]>;
   enabledMcpServers(): Promise<Record<string, McpServerConfig>>;
+  mcpServerEntries(): Promise<readonly PluginMcpServerEntry[]>;
   enabledHooks(): Promise<readonly HookDef[]>;
   // Consumption reads resolve to a per-method fallback (never reject) while
   // no snapshot has loaded; consumers pinning a read use this to tell a real

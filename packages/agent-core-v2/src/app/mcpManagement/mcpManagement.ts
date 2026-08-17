@@ -1,0 +1,180 @@
+/**
+ * `mcpManagement` domain — `IMcpManagementService` contract.
+ *
+ * The unified MCP management plane over the `mcpRegistry` read view:
+ *
+ *  - Write plane: CRUD on the user-level `mcp.json` guarded by the registry
+ *    (read-only plugin / project-layer entries reject mutations), plus a
+ *    connection-test probe that accepts either an inline server config or a
+ *    registry-resolved name. Mutations land in the user-level file only —
+ *    live sessions pick them up through the store's change event and the
+ *    workspace config watch.
+ *  - Inspection: the locator-addressed catalog with redacted configs, a
+ *    per-server auth-status surface (offline by default, `verify` probes),
+ *    and a batched real-connection inspection; runtime names shared by
+ *    enabled entries are reported `unavailable` instead of guessed.
+ *  - OAuth: locator-addressed begin/complete/cancel/reset over the shared
+ *    `mcpConfig` OAuth orchestrator, with flow handles keyed by flowId and
+ *    ambiguity rejection for shared runtime names.
+ *
+ * The plane is unreleased: the edge exposure (server routes, client
+ * facades) gates on the `mcp_management` flag; the engine service itself
+ * stays ungated so in-process hosts can delegate to it. Bound at App scope.
+ */
+
+import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+
+import type { McpServerConfig } from '#/mcpCore/config-schema';
+import type { McpServerConfigView } from '#/mcpCore/configView';
+import type {
+  McpRegistryPluginOrigin,
+  McpRegistryQuery,
+  McpServerSource,
+} from '#/app/mcpRegistry/mcpRegistry';
+
+export type GlobalMcpServerConfig = McpServerConfig & { readonly name: string };
+
+export interface McpManagedServer {
+  readonly name: string;
+  /**
+   * Mutable (user-level) entries carry the full config so edit UIs can
+   * prefill values; read-only entries are redacted to sorted key lists
+   * (`envKeys` / `headerKeys`) and never disclose secret values.
+   */
+  readonly config: McpServerConfig | McpServerConfigView;
+  readonly source: McpServerSource;
+  readonly origin: string;
+  readonly mutable: boolean;
+  readonly plugin?: McpRegistryPluginOrigin;
+}
+
+export interface McpServerTestTarget {
+  /** Registry-resolved by name when `server` is omitted. */
+  readonly name?: string;
+  /** Inline config probes as-is — nothing has to be saved first. */
+  readonly server?: GlobalMcpServerConfig;
+  /** Project layers join the resolution; also the stdio working directory. */
+  readonly cwd?: string;
+}
+
+export interface McpServerTestResult {
+  readonly success: boolean;
+  readonly output: string;
+}
+
+/**
+ * Stable address of one catalog entry: a global (file-layer) server by name,
+ * or a plugin server by plugin id + manifest-local server name.
+ */
+export type McpServerLocator =
+  | { readonly source: 'global'; readonly name: string }
+  | { readonly source: 'plugin'; readonly pluginId: string; readonly serverName: string };
+
+/** Locator-addressed catalog entry with the redacted config view. */
+export interface McpServerDescriptor {
+  /** `global:<name>` / `plugin:<pluginId>:<serverName>`, URL-encoded. */
+  readonly serverId: string;
+  readonly locator: McpServerLocator;
+  readonly runtimeName: string;
+  /** Canonical credential URL for remote servers; undefined for stdio. */
+  readonly canonicalUrl?: string;
+  readonly origin: McpServerSource;
+  readonly config: McpServerConfigView;
+  readonly enabled: boolean;
+  readonly editable: boolean;
+}
+
+export type McpServerAuthState =
+  | 'not-applicable'
+  | 'bearer-token'
+  | 'oauth-required'
+  | 'oauth-authorized'
+  | 'oauth-expired'
+  | 'unavailable';
+
+export interface McpServerInspection extends McpServerDescriptor {
+  readonly authStatus: McpServerAuthState;
+  readonly checkedAt?: number;
+  readonly error?: string;
+}
+
+export interface McpServerAuthStatus {
+  readonly name: string;
+  readonly authStatus: McpServerAuthState;
+}
+
+export type McpServerAuthBeginResult =
+  | {
+      readonly status: 'authorization-required';
+      readonly flowId: string;
+      readonly authorizationUrl: string;
+    }
+  | { readonly status: 'already-authorized' };
+
+export interface McpServerAuthFlowHandle {
+  readonly flowId: string;
+  readonly timeoutMs?: number;
+}
+
+export interface McpAuthStatusQuery extends McpRegistryQuery {
+  /** Online verification: probe a real connection instead of offline classification. */
+  readonly verify?: boolean;
+}
+
+export interface IMcpManagementService {
+  readonly _serviceBrand: undefined;
+
+  listServers(query?: McpRegistryQuery): Promise<readonly McpManagedServer[]>;
+
+  getServer(name: string, query?: McpRegistryQuery): Promise<McpManagedServer>;
+
+  /** Writes the user-level file; rejects read-only collisions. Returns the refreshed list. */
+  addServer(server: GlobalMcpServerConfig): Promise<readonly McpManagedServer[]>;
+
+  /** Updates an existing user-level entry; rejects read-only collisions. Returns the refreshed list. */
+  updateServer(server: GlobalMcpServerConfig): Promise<readonly McpManagedServer[]>;
+
+  /** Removes a user-level entry; rejects read-only collisions. Returns the refreshed list. */
+  removeServer(name: string): Promise<readonly McpManagedServer[]>;
+
+  testServer(target: McpServerTestTarget): Promise<McpServerTestResult>;
+
+  /**
+   * Legacy auth-status surface: per-server OAuth state over the registry
+   * catalog. Offline by default (stored-grant classification only);
+   * `verify: true` probes a real connection. Never mutates credentials.
+   */
+  listAuthStatuses(query?: McpAuthStatusQuery): Promise<readonly McpServerAuthStatus[]>;
+
+  /**
+   * The locator-addressed catalog plus a batched real-connection probe of
+   * every OAuth candidate. A runtime name shared by enabled entries cannot
+   * be probed (or credentialed) unambiguously and reports `unavailable`.
+   */
+  inspectServers(targets?: readonly McpServerLocator[]): Promise<readonly McpServerInspection[]>;
+
+  /**
+   * Resolve a legacy name-only auth target: exactly one enabled entry may
+   * own the runtime name — under a collision the caller cannot tell which
+   * credential the flow acts on, so it rejects instead of guessing.
+   */
+  resolveServerByName(name: string): Promise<McpServerLocator>;
+
+  /** Begin an interactive OAuth flow for a remote server. */
+  beginServerAuth(locator: McpServerLocator): Promise<McpServerAuthBeginResult>;
+
+  /** Await the browser callback and finish the code exchange. Unknown flow → request.invalid. */
+  completeServerAuth(
+    handle: McpServerAuthFlowHandle,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<void>;
+
+  /** Tear down a flow without finishing it; unknown flows are ignored. */
+  cancelServerAuth(handle: Pick<McpServerAuthFlowHandle, 'flowId'>): Promise<void>;
+
+  /** Clear stored credentials; the invalidation event reaches live sessions. */
+  resetServerAuth(locator: McpServerLocator): Promise<void>;
+}
+
+export const IMcpManagementService: ServiceIdentifier<IMcpManagementService> =
+  createDecorator<IMcpManagementService>('mcpManagementService');
