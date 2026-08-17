@@ -503,7 +503,7 @@ export class SubagentTool implements ISubagentTool {
           taskId,
         });
         // Mirroring deferred this to keep spawned ahead of started.
-        requester.accessor
+        void requester.accessor
           .get(IEventDispatcher)
           ?.dispatch(new SubagentStarted({ subagentId: handle.agentId }));
       }
