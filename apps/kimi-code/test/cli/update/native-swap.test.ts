@@ -269,7 +269,9 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
 
     expect(relaunched).toBe(false);
-    expect(calls).toHaveLength(0);
+    // The smoke check runs before anything is moved; only the re-exec is absent.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).toEqual(['--version']);
     // The staged update is restored, not dropped: a later launch retries the swap.
     const restored = await readStagedNativeUpdate(exePath);
     expect(restored).toMatchObject({ version: STAGED_VERSION });
