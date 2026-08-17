@@ -1855,6 +1855,26 @@ describe('Agent tool execution contract', () => {
       description: 'Find cause',
       timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
     });
+    completion.resolve({ summary: 'finished later' });
+  });
+
+  it('emits spawned with the registered task id ahead of started', async () => {
+    const completion = deferred<{ readonly summary: string }>();
+    const lifecycle = createAgentLifecycleStub({
+      createAgentIds: ['agent-child'],
+      runCompletion: () => completion.promise,
+    });
+    const context = createAgentToolContext(lifecycle);
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      run_in_background: true,
+    });
+
+    if (typeof result.output !== 'string') throw new TypeError('expected string output');
+    const taskId = result.output.match(/task_id: (agent-[0-9a-z]{8})/)?.[1];
+    expect(taskId).toBeDefined();
     expect(lifecycle.publishedEvents).toContainEqual(
       expect.objectContaining({
         type: 'subagent.spawned',
