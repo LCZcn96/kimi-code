@@ -1855,6 +1855,15 @@ describe('Agent tool execution contract', () => {
       description: 'Find cause',
       timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
     });
+    // The spawned signal is emitted after task registration, so clients can
+    // bind cancel/status to the task store immediately.
+    expect(lifecycle.publishedEvents).toContainEqual(
+      expect.objectContaining({
+        type: 'subagent.spawned',
+        subagentId: 'agent-child',
+        taskId,
+      }),
+    );
     completion.resolve({ summary: 'finished later' });
   });
 

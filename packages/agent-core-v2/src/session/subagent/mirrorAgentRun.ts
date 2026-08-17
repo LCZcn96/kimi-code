@@ -18,7 +18,9 @@
  * session recordings and dashboards stay valid. The spawned signal also
  * reports the child's bound model alias and its effective thinking effort, so
  * clients can render both at spawn instead of waiting for the first
- * `agent.status.updated` frame.
+ * `agent.status.updated` frame. A caller that registers the run as a task
+ * (the `Agent` tool) emits spawned only after registration, so the signal
+ * also carries the task id clients bind cancel/status actions to.
  */
 
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
@@ -49,6 +51,7 @@ export interface SubagentSpawnedPayload {
   readonly runInBackground: boolean;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly taskId?: string;
 }
 
 export class SubagentSpawned extends Event2<SubagentSpawnedPayload> {
@@ -99,6 +102,7 @@ export interface AgentRunSpawnedMeta {
   readonly swarmIndex?: number;
   readonly runInBackground?: boolean;
   readonly model?: string;
+  readonly taskId?: string;
 }
 
 export interface MirrorAgentRunOptions {
@@ -131,6 +135,7 @@ export function emitAgentRunSpawned(
       runInBackground: meta.runInBackground ?? false,
       model: meta.model,
       thinkingEffort: childProfile?.getEffectiveThinkingLevel(),
+      taskId: meta.taskId,
     }),
   );
   childProfile?.republishStatus();

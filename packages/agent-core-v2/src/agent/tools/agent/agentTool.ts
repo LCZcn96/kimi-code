@@ -35,6 +35,9 @@
  * profiles mid-session, and a live read would rewrite the tools payload of
  * every later request — breaking the provider's prompt cache for a change a
  * live agent must not see (new profiles take effect on `/new` or `/reload`).
+ * The `subagent.spawned` signal is emitted only after the run's task
+ * registration succeeds, so it carries the task id (and a failed registration
+ * leaves no spawned row behind).
  * Bound at Agent scope.
  */
 
@@ -352,15 +355,6 @@ export class SubagentTool implements ISubagentTool {
       });
     }
 
-    const runInBackground = args.run_in_background === true;
-    emitAgentRunSpawned(requester, agentId, {
-      profileName,
-      parentToolCallId: toolCallId,
-      description: args.description,
-      runInBackground,
-      model: displayModel,
-    });
-
     const run = await this.subagents.run(
       agentId,
       { kind: 'prompt', prompt: promptText },
@@ -491,6 +485,18 @@ export class SubagentTool implements ISubagentTool {
               : message,
           isError: true,
         };
+      }
+
+      const requester = this.lifecycle.get(this.callerAgentId);
+      if (requester !== undefined) {
+        emitAgentRunSpawned(requester, handle.agentId, {
+          profileName: handle.profileName,
+          parentToolCallId: toolCallId,
+          description: args.description,
+          runInBackground,
+          model: handle.model,
+          taskId,
+        });
       }
 
       if (runInBackground) {
