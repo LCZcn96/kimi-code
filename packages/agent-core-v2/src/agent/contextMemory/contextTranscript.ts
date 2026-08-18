@@ -1,18 +1,3 @@
-/**
- * `contextMemory` domain — rebuilds display history from the wire journal.
- *
- * Supplies transcript consumers with full pre-compaction history and folded
- * context length while preserving undo/clear semantics. Loop events and
- * interleaved `context.append_message`s are reduced by the shared
- * `createLoopEventFold` core (`loopEventFold`) with a transcript
- * materialization that keeps every entry's originating record time and tracks
- * `foldedLength` — the length the live folded context would have after the
- * same records, so callers can detect and append a not-yet-flushed live tail.
- * Compaction, undo, and clear rewrite the materialization itself (kept
- * prefix + summary marker, tail removal, clear floor) and stay local.
- * Scope-agnostic.
- */
-
 import { type ContentPart, type ToolCall } from '#/kosong/contract/message';
 import type { WireRecord } from '#/wire/record';
 
