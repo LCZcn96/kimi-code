@@ -330,6 +330,37 @@ describe('stageNativeUpdate', () => {
     expect((await readStagedNativeUpdate(exePath))?.manual).toBe(true);
   });
 
+  it('re-stages when the staged exe is corrupted at the same size', async () => {
+    const first = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    // Same-size corruption after the download: the metadata still validates
+    // (size matches), but the bytes no longer hash to the recorded checksum.
+    await writeFile(stagedExePath(exePath, first.staged), Buffer.alloc(PAYLOAD.length));
+    // Size-only readers still see the stage as valid…
+    expect(await readStagedNativeUpdate(exePath)).not.toBeNull();
+
+    const secondFetch = mockCdnFetch({ payload: PAYLOAD });
+    const second = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: secondFetch,
+    });
+
+    // …but adoption re-verifies the digest, so the payload is re-downloaded
+    // and the damaged exe is replaced.
+    expect(second.status).toBe('staged');
+    expect(secondFetch).toHaveBeenCalled();
+    const repaired = await readFile(stagedExePath(exePath, second.staged));
+    expect(repaired.equals(PAYLOAD)).toBe(true);
+  });
+
   it('re-stages when the staged exe went missing', async () => {
     const first = await stageNativeUpdate({
       version: VERSION,

@@ -332,21 +332,32 @@ export async function stageNativeUpdate(
 
   const existing = await readStagedNativeUpdate(options.exePath);
   if (existing !== null && existing.version === options.version) {
-    // An explicit upgrade adopts an auto-staged payload — but only report
-    // the adoption once the manual marker is confirmed persisted. A stage
-    // currently being claimed by a startup swap cannot be promoted here;
-    // fall through and stage afresh instead.
-    if (options.manual === true && existing.manual !== true) {
-      if (await promoteStagedUpdateToManual(options.exePath)) {
-        return { status: 'already-staged', staged: { ...existing, manual: true } };
+    // readStagedNativeUpdate checks only the recorded size — a same-size
+    // corruption after the download (disk damage, a non-durable write)
+    // would still be adopted here and reported as success, only for the
+    // startup swap's claim-time re-verify to reject and discard it. Compare
+    // the actual digest before adopting; a mismatch falls through and
+    // re-stages from the CDN (the publishing rename replaces the damaged
+    // exe atomically).
+    const digest = await hashFileSha256(stagedExePath(options.exePath, existing));
+    if (digest === existing.sha256) {
+      // An explicit upgrade adopts an auto-staged payload — but only report
+      // the adoption once the manual marker is confirmed persisted. A stage
+      // currently being claimed by a startup swap cannot be promoted here;
+      // fall through and stage afresh instead.
+      if (options.manual === true && existing.manual !== true) {
+        if (await promoteStagedUpdateToManual(options.exePath)) {
+          return { status: 'already-staged', staged: { ...existing, manual: true } };
+        }
+      } else {
+        return { status: 'already-staged', staged: existing };
       }
-    } else {
-      return { status: 'already-staged', staged: existing };
     }
   }
 
   // A different version was staged earlier and never swapped (skipped
-  // rollout, user stayed offline, …). Only its metadata record is removed —
+  // rollout, user stayed offline, …), or the same version's payload failed
+  // the integrity check above. Only its metadata record is removed —
   // the exe stays: deleting it could pull the payload from a live swap that
   // claimed the old stage, and an unreferenced exe is reaped by a later
   // orphan cleanup. The metadata write below atomically replaces the record.
