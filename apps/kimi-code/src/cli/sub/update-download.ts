@@ -11,27 +11,38 @@ import { log } from '@moonshot-ai/kimi-code-sdk';
 import {
   readUpdateInstallLockVersion,
   tryAcquireUpdateInstallLock,
+  type UpdateInstallLockHandle,
 } from '#/cli/update/install-lock';
 import { readStagedNativeUpdate, stageNativeUpdate } from '#/cli/update/native-stage';
 import { detectNativeInstall } from '#/cli/update/source';
 
 const LOCK_HELD_POLL_INTERVAL_MS = 2_000;
 
+type StagedUpdateWait =
+  | { readonly status: 'staged' }
+  | { readonly status: 'takeover'; readonly lock: UpdateInstallLockHandle | null };
+
 /**
  * Another worker holds the install lock for the SAME version. Returning right
  * away would report a success that has not happened yet — the in-flight
- * download may still fail — so wait for it: resolves true once its staged
- * update is verified on disk, false when the holder finished without staging
- * (the caller then takes over the download itself).
+ * download may still fail — so wait for it: 'staged' once its staged update is
+ * verified on disk; 'takeover' once the lock becomes acquirable, with the lock
+ * already held for the caller. The lock goes stale the moment its holder dies
+ * (see install-lock), so a killed downloader cannot strand a foreground
+ * `kimi upgrade` in this loop.
  */
-async function waitForStagedUpdate(version: string, exePath: string): Promise<boolean> {
+async function waitForStagedUpdate(
+  version: string,
+  exePath: string,
+): Promise<StagedUpdateWait> {
   for (;;) {
     const staged = await readStagedNativeUpdate(exePath);
-    if (staged !== null && staged.version === version) return true;
-    // staged.json lands before the holder releases its lock, so a lock that
-    // is gone (or changed hands) with nothing staged means the holder failed.
-    const holderVersion = await readUpdateInstallLockVersion();
-    if (holderVersion !== version) return false;
+    if (staged !== null && staged.version === version) return { status: 'staged' };
+    // Poll the acquisition itself: while the holder lives its lock stays
+    // fresh and this returns null without side effects; when the holder
+    // finishes (or dies) without staging, the takeover happens right here.
+    const lock = await tryAcquireUpdateInstallLock({ version });
+    if (lock !== null) return { status: 'takeover', lock };
     await new Promise((resolve) => {
       setTimeout(resolve, LOCK_HELD_POLL_INTERVAL_MS);
     });
@@ -53,12 +64,15 @@ export async function runUpdateDownloadCommand(version: string): Promise<number>
       out.write(
         `A download of Kimi Code ${version} is already in progress; waiting for it to finish…\n`,
       );
-      if (await waitForStagedUpdate(version, process.execPath)) {
+      const wait = await waitForStagedUpdate(version, process.execPath);
+      if (wait.status === 'staged') {
         out.write(`Kimi Code ${version} is downloaded; it applies on the next start.\n`);
         return 0;
       }
-      // The holder finished without staging (failed or crashed): take over.
-      lock = await tryAcquireUpdateInstallLock({ version });
+      // The holder finished without staging (failed or died): take over. The
+      // lock may already be held by another winner of the takeover race —
+      // the null check below reports that as held.
+      lock = wait.lock;
     } else if (holderVersion === undefined) {
       // The lock was released between the two reads — retry the acquire once.
       lock = await tryAcquireUpdateInstallLock({ version });

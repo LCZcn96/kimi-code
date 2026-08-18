@@ -68,7 +68,14 @@ export async function fetchNativeReleaseManifest(
     if (!response.ok) {
       throw new Error(`native manifest for ${version} returned HTTP ${response.status}`);
     }
-    return NativeReleaseManifestSchema.parse(JSON.parse(await response.text()));
+    const manifest = NativeReleaseManifestSchema.parse(JSON.parse(await response.text()));
+    // A stale or mispublished endpoint can answer with ANOTHER release's
+    // manifest: its checksums would then be applied to this version's binary
+    // and every download would fail verification. Reject the mismatch here.
+    if (manifest.version !== version) {
+      throw new Error(`manifest for ${version} served content for ${manifest.version}`);
+    }
+    return manifest;
   } finally {
     clearTimeout(timeout);
   }

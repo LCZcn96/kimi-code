@@ -115,4 +115,27 @@ describe('update install lock', () => {
     expect(lock).not.toBeNull();
     await lock?.release();
   });
+
+  it('sweeps a young lock whose holder process is gone', async () => {
+    // A killed holder skips its finally and never releases: the dead pid must
+    // make the lock stale immediately, not after the 30-minute threshold.
+    const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await new Promise((resolve) => child.once('exit', resolve));
+    const filePath = getUpdateInstallLockFile();
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(
+      filePath,
+      `${JSON.stringify({
+        version: '0.5.0',
+        pid: child.pid ?? -1,
+        startedAt: new Date().toISOString(),
+      })}\n`,
+      'utf-8',
+    );
+
+    const lock = await tryAcquireUpdateInstallLock({ version: '0.5.0' });
+
+    expect(lock).not.toBeNull();
+    await lock?.release();
+  });
 });

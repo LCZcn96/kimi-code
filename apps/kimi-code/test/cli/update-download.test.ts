@@ -131,10 +131,8 @@ describe('runUpdateDownloadCommand', () => {
     const release = vi.fn(async () => {});
     mocks.tryAcquireUpdateInstallLock
       .mockResolvedValueOnce(null) // held by the other worker…
-      .mockResolvedValueOnce({ filePath: '/tmp/install.lock', release }); // …then ours
-    mocks.readUpdateInstallLockVersion
-      .mockResolvedValueOnce('0.7.0') // the initial holder check
-      .mockResolvedValueOnce(undefined); // inside the wait: lock released, nothing staged
+      .mockResolvedValueOnce({ filePath: '/tmp/install.lock', release }); // …won inside the wait loop
+    mocks.readUpdateInstallLockVersion.mockResolvedValueOnce('0.7.0'); // the initial holder check
     mocks.readStagedNativeUpdate.mockResolvedValue(null);
     await expect(runUpdateDownloadCommand('0.7.0')).resolves.toBe(0);
     expect(mocks.stageNativeUpdate).toHaveBeenCalledWith(

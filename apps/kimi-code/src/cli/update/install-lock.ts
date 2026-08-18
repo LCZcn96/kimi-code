@@ -54,12 +54,14 @@ function isProcessAlive(pid: number): boolean {
 
 /**
  * Staleness check over the lock file's CONTENTS. Unparseable or shapeless
- * content counts as stale (crash residue). Past the age threshold the
- * holder's liveness decides: a native download is idle-bounded but
- * intentionally not duration-bounded, so a slow link legitimately exceeds it;
- * sweeping that lock would let a second downloader write the same `.staging`
- * paths concurrently. (A pid reused by an unrelated process can pin the lock
- * until that process exits — a delayed update, never a corrupt one.)
+ * content counts as stale (crash residue). A holder that is gone can never
+ * release its lock (a killed process skips its finally) nor make progress —
+ * stale at ANY age; the atomic publish guarantees the pid was written
+ * complete by a then-live process, so a dead pid means the holder died
+ * afterwards. Past the age threshold a LIVE holder still survives: a native
+ * download is idle-bounded but intentionally not duration-bounded, so a slow
+ * link legitimately exceeds it. (A pid reused by an unrelated process can pin
+ * the lock until that process exits — a delayed update, never a corrupt one.)
  */
 function isStaleLockContent(raw: string, now: Date): boolean {
   let parsed: unknown;
@@ -73,8 +75,9 @@ function isStaleLockContent(raw: string, now: Date): boolean {
   if (typeof lock.startedAt !== 'string') return true;
   const startedAt = Date.parse(lock.startedAt);
   if (!Number.isFinite(startedAt)) return true;
+  if (typeof lock.pid === 'number' && !isProcessAlive(lock.pid)) return true;
   if (now.getTime() - startedAt <= UPDATE_INSTALL_LOCK_STALE_MS) return false;
-  return typeof lock.pid === 'number' ? !isProcessAlive(lock.pid) : true;
+  return typeof lock.pid !== 'number';
 }
 
 async function createLockFile(

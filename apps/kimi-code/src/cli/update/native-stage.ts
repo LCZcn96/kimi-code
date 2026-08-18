@@ -159,6 +159,9 @@ export interface StageNativeUpdateResult {
  */
 const DOWNLOAD_IDLE_TIMEOUT_MS = 30_000;
 
+/** Uniquifies the .part path across concurrent in-process workers. */
+let stageTempCounter = 0;
+
 async function downloadAndHash(
   url: string,
   partPath: string,
@@ -253,7 +256,16 @@ export async function stageNativeUpdate(
     stagedAt: new Date().toISOString(),
   };
 
-  const partPath = join(stagingDir, `${exeFileName}.part`);
+  // Unique .part name per worker: a same-version downloader may overlap a
+  // swap claim (and, in the irreducible residual of pathname-level locking, a
+  // second lock holder) — a shared .part path would interleave writes into
+  // garbage that fails verification, with each side's cleanup deleting the
+  // other's payload.
+  const partPath = join(
+    stagingDir,
+    `${exeFileName}.${process.pid}.${stageTempCounter}.part`,
+  );
+  stageTempCounter += 1;
   try {
     const manifest = await fetchNativeReleaseManifest(options.version, fetchImpl);
     const entry = selectPlatformEntry(manifest, platform, arch);

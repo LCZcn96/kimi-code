@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -125,9 +125,10 @@ describe('stageNativeUpdate', () => {
     const exeBytes = await readFile(stagedExePath(exePath, result.staged));
     expect(exeBytes.equals(PAYLOAD)).toBe(true);
     // The .part intermediate is gone once the download was promoted.
-    await expect(
-      stat(join(getNativeStagingDir(exePath), `kimi-${VERSION}.part`)),
-    ).rejects.toThrow();
+    const leftovers = (await readdir(getNativeStagingDir(exePath))).filter((entry) =>
+      entry.endsWith('.part'),
+    );
+    expect(leftovers).toEqual([]);
   });
 
   it('marks the staged exe executable', async () => {
@@ -154,16 +155,20 @@ describe('stageNativeUpdate', () => {
       fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
     });
     const stagedExe = stagedExePath(exePath, result.staged);
-    const partPath = `${stagedExe}.part`;
-    const chmodIndex = fsMocks.calls.findIndex(
-      (call) => call.op === 'chmod' && call.path === partPath,
+    const chmodCall = fsMocks.calls.find(
+      (call) => call.op === 'chmod' && call.path.endsWith('.part'),
     );
-    const publishIndex = fsMocks.calls.findIndex(
-      (call) => call.op === 'rename' && call.path === partPath && call.dst === stagedExe,
+    const publishCall = fsMocks.calls.find(
+      (call) => call.op === 'rename' && call.dst === stagedExe,
     );
-    expect(chmodIndex).toBeGreaterThanOrEqual(0);
-    expect(publishIndex).toBeGreaterThanOrEqual(0);
-    expect(chmodIndex).toBeLessThan(publishIndex);
+    if (chmodCall === undefined || publishCall === undefined) {
+      throw new Error('expected chmod(.part) and rename(.part → staged) calls');
+    }
+    // The chmod lands on the very .part file that gets published, before it.
+    expect(publishCall.path).toBe(chmodCall.path);
+    expect(fsMocks.calls.indexOf(chmodCall)).toBeLessThan(
+      fsMocks.calls.indexOf(publishCall),
+    );
   });
 
   it('reports download progress with the Content-Length total', async () => {
