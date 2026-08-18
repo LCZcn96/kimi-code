@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { nativeBinaryUrl, nativeManifestUrl } from '#/cli/update/native-manifest';
 import {
+  promoteStagedUpdateToManual,
   readStagedNativeUpdate,
   stagedExePath,
   stageNativeUpdate,
@@ -383,6 +384,32 @@ describe('stageNativeUpdate', () => {
     expect(second.status).toBe('staged');
   });
 
+  it('keeps the previous staged record when the superseding download fails', async () => {
+    await stageNativeUpdate({
+      version: '0.6.0',
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ version: '0.6.0', payload: Buffer.from('old-payload') }),
+    });
+
+    // The superseding download fails verification. The old record must
+    // survive: deleting it before the replacement is ready could remove a
+    // concurrent worker's freshly published record, and here it would lose
+    // a still-valid staged update.
+    await expect(
+      stageNativeUpdate({
+        version: VERSION,
+        exePath,
+        platform: 'linux',
+        arch: 'x64',
+        fetchImpl: mockCdnFetch({ payload: PAYLOAD, checksum: 'f'.repeat(64) }),
+      }),
+    ).rejects.toThrow(/sha256 mismatch/);
+
+    expect((await readStagedNativeUpdate(exePath))?.version).toBe('0.6.0');
+  });
+
   it('throws on a checksum mismatch and cleans up leftovers', async () => {
     await expect(
       stageNativeUpdate({
@@ -638,6 +665,62 @@ describe('stageNativeUpdate', () => {
     // The exe owned by the live swap survives this attempt's failure cleanup.
     const bytes = await readFile(join(stagingDir, exeFileName));
     expect(bytes.equals(PAYLOAD)).toBe(true);
+  });
+});
+
+describe('promoteStagedUpdateToManual', () => {
+  let workDir: string;
+  let exePath: string;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), 'kimi-promote-test-'));
+    exePath = join(workDir, 'bin', 'kimi');
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  it('promotes the adopted record to manual', async () => {
+    await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    const adopted = await readStagedNativeUpdate(exePath);
+    if (adopted === null) throw new Error('expected a staged record');
+
+    await expect(promoteStagedUpdateToManual(exePath, adopted)).resolves.toBe(true);
+    expect((await readStagedNativeUpdate(exePath))?.manual).toBe(true);
+  });
+
+  it('refuses to promote a record the staged metadata no longer matches', async () => {
+    await stageNativeUpdate({
+      version: '0.6.0',
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ version: '0.6.0', payload: Buffer.from('old-payload') }),
+    });
+    const adopted = await readStagedNativeUpdate(exePath);
+    if (adopted === null) throw new Error('expected a staged record');
+
+    // A newer stage is published before the explicit upgrade's promote
+    // lands: the stale record must not overwrite it.
+    await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+
+    await expect(promoteStagedUpdateToManual(exePath, adopted)).resolves.toBe(false);
+    const current = await readStagedNativeUpdate(exePath);
+    expect(current?.version).toBe(VERSION);
+    expect(current?.manual).toBeUndefined();
   });
 });
 

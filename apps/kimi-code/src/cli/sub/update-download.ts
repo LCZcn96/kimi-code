@@ -48,7 +48,7 @@ async function waitForStagedUpdate(
   for (;;) {
     const staged = await readStagedNativeUpdate(exePath);
     if (staged !== null && staged.version === version) {
-      if (!manual || (await promoteStagedUpdateToManual(exePath))) {
+      if (!manual || (await promoteStagedUpdateToManual(exePath, staged))) {
         return { status: 'staged' };
       }
       // The stage is being claimed/restored by a concurrent swap — the next

@@ -88,22 +88,51 @@ export async function readStagedNativeUpdate(
 }
 
 /**
- * Mark the currently staged update as manual, confirming the marker actually
+ * Two staged records are the same generation when every field matches —
+ * ignoring only the `manual` marker that promotion flips. Used to make sure
+ * a read-modify-write still acts on the record it read.
+ */
+function isSameStagedRecord(a: StagedNativeUpdate, b: StagedNativeUpdate): boolean {
+  return (
+    a.version === b.version &&
+    a.target === b.target &&
+    a.exeFileName === b.exeFileName &&
+    a.sha256 === b.sha256 &&
+    a.exeSize === b.exeSize &&
+    a.stagedAt === b.stagedAt
+  );
+}
+
+/**
+ * Mark the adopted staged update as manual, confirming the marker actually
  * persisted. Used when an explicit `kimi upgrade` adopts a payload the
  * passive downloader staged (already on disk, or still downloading): the
  * marker lets the startup swap apply it even under the env opt-out.
  *
- * Returns false when the stage is concurrently claimed by a startup swap
- * (nothing to promote) or a confirming read never sees the marker — callers
- * must NOT report adoption for a promotion that never landed. The write and
- * the confirmation use the same atomic metadata path as staging; a swap that
- * claims the PROMOTED file proceeds with the marker, which is the desired
- * outcome anyway.
+ * `expected` is the record the caller read and decided to adopt. The promote
+ * write only happens while the on-disk metadata still IS that record — a
+ * concurrent downloader may have published a different stage meanwhile, and
+ * overwriting its record would orphan a payload whose worker already
+ * reported success. (Pathname-only writes cannot compare-and-swap, so a
+ * residual publish-between-check-and-write window remains; the identity
+ * re-read narrows it to that gap.)
+ *
+ * Returns false when the record changed / is concurrently claimed by a
+ * startup swap (nothing to promote) or a confirming read never sees the
+ * promoted record — callers must NOT report adoption for a promotion that
+ * never landed. The write and the confirmation use the same atomic metadata
+ * path as staging; a swap that claims the PROMOTED file proceeds with the
+ * marker, which is the desired outcome anyway.
  */
-export async function promoteStagedUpdateToManual(exePath: string): Promise<boolean> {
+export async function promoteStagedUpdateToManual(
+  exePath: string,
+  expected: StagedNativeUpdate,
+): Promise<boolean> {
+  if (expected.manual === true) return true;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const staged = await readStagedNativeUpdate(exePath);
-    if (staged === null) return false;
+    if (staged === null || !isSameStagedRecord(staged, expected)) return false;
+    // Another promoter already marked this exact record — our work is done.
     if (staged.manual === true) return true;
     await writeJsonFile(getNativeStagedStateFile(exePath), StagedNativeUpdateSchema, {
       ...staged,
@@ -111,9 +140,10 @@ export async function promoteStagedUpdateToManual(exePath: string): Promise<bool
     });
     // Confirm: a concurrent claim/restore cycle could leave unpromoted
     // content behind (the restore never overwrites, so a confirmed marker
-    // cannot be displaced afterwards).
+    // cannot be displaced afterwards). The confirmation must see the
+    // promoted ADOPTION CANDIDATE itself, not just any manual record.
     const confirmed = await readStagedNativeUpdate(exePath);
-    if (confirmed?.manual === true) return true;
+    if (confirmed?.manual === true && isSameStagedRecord(confirmed, expected)) return true;
   }
   return false;
 }
@@ -346,7 +376,7 @@ export async function stageNativeUpdate(
       // currently being claimed by a startup swap cannot be promoted here;
       // fall through and stage afresh instead.
       if (options.manual === true && existing.manual !== true) {
-        if (await promoteStagedUpdateToManual(options.exePath)) {
+        if (await promoteStagedUpdateToManual(options.exePath, existing)) {
           return { status: 'already-staged', staged: { ...existing, manual: true } };
         }
       } else {
@@ -357,13 +387,12 @@ export async function stageNativeUpdate(
 
   // A different version was staged earlier and never swapped (skipped
   // rollout, user stayed offline, …), or the same version's payload failed
-  // the integrity check above. Only its metadata record is removed —
-  // the exe stays: deleting it could pull the payload from a live swap that
-  // claimed the old stage, and an unreferenced exe is reaped by a later
-  // orphan cleanup. The metadata write below atomically replaces the record.
-  if (existing !== null) {
-    await rm(getNativeStagedStateFile(options.exePath), { force: true }).catch(() => {});
-  }
+  // the integrity check above. The old record is LEFT IN PLACE until the
+  // atomic metadata write below replaces it: a pathname-level delete could
+  // remove a concurrent worker's freshly published record (orphaning a
+  // payload whose worker already reported success), and a swap claiming the
+  // old stage meanwhile applies a still-valid update. The old exe stays too
+  // — an unreferenced one is reaped by the age-gated orphan cleanup.
   const stagingDir = getNativeStagingDir(options.exePath);
   await mkdir(stagingDir, { recursive: true });
   // Drop orphans from interrupted earlier runs before writing ours.
