@@ -208,8 +208,11 @@ async function rollback(bakPath: string, exePath: string): Promise<boolean> {
 
 /**
  * Remove leftover `.bak` siblings of the exe from earlier swaps/installs.
- * A `.bak` still mapped by a running old instance cannot be deleted on
- * Windows — it is simply left for a later launch.
+ * Only names the updater itself creates are removed: the exact `<exe>.bak`
+ * and the numeric PID fallback `<exe>.<pid>.bak` — anything else with the
+ * prefix (`kimi.config.bak`, …) belongs to the user. A `.bak` still mapped
+ * by a running old instance cannot be deleted on Windows — it is simply
+ * left for a later launch.
  */
 async function cleanupBackups(exePath: string, keepPath?: string): Promise<void> {
   const dir = dirname(exePath);
@@ -222,6 +225,8 @@ async function cleanupBackups(exePath: string, keepPath?: string): Promise<void>
   }
   for (const entry of entries) {
     if (!entry.startsWith(`${base}.`) || !entry.endsWith('.bak')) continue;
+    const middle = entry.slice(base.length + 1, -'.bak'.length);
+    if (middle !== '' && !/^\d+$/.test(middle)) continue;
     const full = join(dir, entry);
     if (full === keepPath) continue;
     await unlink(full).catch(() => {});

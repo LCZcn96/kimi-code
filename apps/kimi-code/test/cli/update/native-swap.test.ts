@@ -354,6 +354,21 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     await expect(stat(`${exePath}.12345.bak`)).rejects.toThrow();
   });
 
+  it('leaves foreign .bak files alone during backup cleanup', async () => {
+    await writeFile(`${exePath}.bak`, 'stale-backup');
+    await writeFile(`${exePath}.config.bak`, 'user-backup');
+    await writeFile(`${exePath}.notes.bak`, 'user-backup');
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    // Only the updater-owned exact backup is swept.
+    await expect(stat(`${exePath}.bak`)).rejects.toThrow();
+    expect(await readFile(`${exePath}.config.bak`, 'utf-8')).toBe('user-backup');
+    expect(await readFile(`${exePath}.notes.bak`, 'utf-8')).toBe('user-backup');
+  });
+
   it('leaves every artifact alone while another instance holds a fresh swap claim', async () => {
     const stagingDir = getNativeStagingDir(exePath);
     await mkdir(stagingDir, { recursive: true });
