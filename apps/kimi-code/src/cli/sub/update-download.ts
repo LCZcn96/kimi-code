@@ -13,7 +13,11 @@ import {
   tryAcquireUpdateInstallLock,
   type UpdateInstallLockHandle,
 } from '#/cli/update/install-lock';
-import { readStagedNativeUpdate, stageNativeUpdate } from '#/cli/update/native-stage';
+import {
+  promoteStagedUpdateToManual,
+  readStagedNativeUpdate,
+  stageNativeUpdate,
+} from '#/cli/update/native-stage';
 import { detectNativeInstall } from '#/cli/update/source';
 
 const LOCK_HELD_POLL_INTERVAL_MS = 2_000;
@@ -69,6 +73,9 @@ export async function runUpdateDownloadCommand(
       );
       const wait = await waitForStagedUpdate(version, process.execPath);
       if (wait.status === 'staged') {
+        // An explicit upgrade adopting a background-staged payload promotes
+        // its marker, so the swap applies it under the env opt-out as well.
+        if (manual) await promoteStagedUpdateToManual(process.execPath);
         out.write(`Kimi Code ${version} is downloaded; it applies on the next start.\n`);
         return 0;
       }

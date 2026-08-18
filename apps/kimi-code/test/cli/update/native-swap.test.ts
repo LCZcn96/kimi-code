@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -551,6 +551,46 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(calls).toHaveLength(2); // smoke check + re-exec
     const newExe = await readFile(exePath);
     expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
+  });
+
+  it('does not overwrite a concurrently published stage when restoring the claim', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    // The exe move (step 2) fails.
+    fsMocks.renameBlocker = (src) => src === exePath;
+    const v2 = '0.8.0';
+    const spawnImpl = ((cmd: string, args: readonly string[]) => {
+      if (args[0] === '--version') {
+        // Mid-smoke: a downloader publishes a NEWER stage (the state-file
+        // path is free — we claimed the older one).
+        const stagingDir = getNativeStagingDir(exePath);
+        const v2Exe = stagedExeFileName(v2, 'linux');
+        writeFileSync(join(stagingDir, v2Exe), 'newer-binary');
+        writeFileSync(
+          getNativeStagedStateFile(exePath),
+          `${JSON.stringify({
+            version: v2,
+            target: 'linux-x64',
+            exeFileName: v2Exe,
+            sha256: 'b'.repeat(64),
+            exeSize: Buffer.byteLength('newer-binary'),
+            stagedAt: new Date().toISOString(),
+          })}\n`,
+        );
+        return fakeChild({ code: 0, stdout: `${STAGED_VERSION}\n` }).child;
+      }
+      return fakeChild({ code: 0 }).child;
+    }) as unknown as NativeSwapDeps['spawnImpl'];
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    // The newer stage survived; the older claim was discarded instead of
+    // clobbering it, and the running exe never moved.
+    const staged = await readStagedNativeUpdate(exePath);
+    expect(staged?.version).toBe(v2);
+    await expect(
+      stat(join(getNativeStagingDir(exePath), stagedExeFileName(STAGED_VERSION, 'linux'))),
+    ).rejects.toThrow();
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });
 
   it('stamps the claim with a fresh mtime so a concurrent launch does not misread it as stale', async () => {

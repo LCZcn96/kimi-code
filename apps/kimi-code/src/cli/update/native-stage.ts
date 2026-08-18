@@ -87,6 +87,22 @@ export async function readStagedNativeUpdate(
   return staged;
 }
 
+/**
+ * Mark the currently staged update as manual. Used when an explicit
+ * `kimi upgrade` adopts a payload the passive downloader staged (already on
+ * disk, or still downloading): the marker lets the startup swap apply it even
+ * under the env opt-out. Best-effort promotion happens via the same atomic
+ * metadata write as staging.
+ */
+export async function promoteStagedUpdateToManual(exePath: string): Promise<void> {
+  const staged = await readStagedNativeUpdate(exePath);
+  if (staged === null || staged.manual === true) return;
+  await writeJsonFile(getNativeStagedStateFile(exePath), StagedNativeUpdateSchema, {
+    ...staged,
+    manual: true,
+  });
+}
+
 /** Remove staged.json + the staged exe; used on downgrade-guard discards and swap failures. */
 export async function removeStagedNativeUpdate(
   exePath: string,
@@ -182,6 +198,23 @@ async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
     if (!isUpdaterOwnedStagingFile(entry)) continue;
     await unlink(join(stagingDir, entry)).catch(() => {});
   }
+}
+
+/** True when any swap claim file references the given staged exe name. */
+async function isReferencedBySwapClaim(stagingDir: string, exeFileName: string): Promise<boolean> {
+  const entries = await readdir(stagingDir).catch(() => [] as string[]);
+  for (const entry of entries) {
+    if (!entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)) continue;
+    const raw = await readFile(join(stagingDir, entry), 'utf-8').catch(() => null);
+    if (raw === null) continue;
+    try {
+      const referenced: unknown = (JSON.parse(raw) as { exeFileName?: unknown }).exeFileName;
+      if (typeof referenced === 'string' && basename(referenced) === exeFileName) return true;
+    } catch {
+      // Unparseable claim — not a reference.
+    }
+  }
+  return false;
 }
 
 export interface StageNativeUpdateOptions {
@@ -306,6 +339,12 @@ export async function stageNativeUpdate(
 
   const existing = await readStagedNativeUpdate(options.exePath);
   if (existing !== null && existing.version === options.version) {
+    // An explicit upgrade adopts an auto-staged payload: promote the marker
+    // so the startup swap applies it under the env opt-out as well.
+    if (options.manual === true && existing.manual !== true) {
+      await promoteStagedUpdateToManual(options.exePath);
+      return { status: 'already-staged', staged: { ...existing, manual: true } };
+    }
     return { status: 'already-staged', staged: existing };
   }
 
@@ -369,11 +408,15 @@ export async function stageNativeUpdate(
     return { status: 'staged', staged };
   } catch (error) {
     await rm(partPath, { force: true }).catch(() => {});
-    // Remove only what THIS attempt owns. Another worker may have staged the
-    // same version while we were downloading — that result belongs to the
-    // current metadata, not to this failing attempt.
+    // Remove only what THIS attempt owns. The staged exe name may belong to
+    // a concurrent worker's published stage (referenced by the current
+    // metadata) or to a live swap (referenced by its claim — the metadata is
+    // renamed away mid-swap, so the metadata check alone cannot see it).
     const current = await readStagedNativeUpdate(options.exePath).catch(() => null);
-    if (current?.exeFileName !== staged.exeFileName) {
+    const referenced =
+      current?.exeFileName === staged.exeFileName ||
+      (await isReferencedBySwapClaim(getNativeStagingDir(options.exePath), staged.exeFileName));
+    if (!referenced) {
       await rm(stagedExePath(options.exePath, staged), { force: true }).catch(() => {});
     }
     // Best effort: drop the staging dir itself when empty (a concurrent

@@ -299,6 +299,31 @@ describe('stageNativeUpdate', () => {
     expect(secondFetch).not.toHaveBeenCalled();
   });
 
+  it('promotes an auto-staged payload to manual when an explicit upgrade adopts it', async () => {
+    // The passive downloader staged the version first (no manual marker).
+    await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+      manual: true,
+    });
+
+    expect(result.status).toBe('already-staged');
+    expect(result.staged.manual).toBe(true);
+    // The promotion persisted to the on-disk metadata.
+    expect((await readStagedNativeUpdate(exePath))?.manual).toBe(true);
+  });
+
   it('re-stages when the staged exe went missing', async () => {
     const first = await stageNativeUpdate({
       version: VERSION,
@@ -528,6 +553,46 @@ describe('stageNativeUpdate', () => {
     expect(staged?.version).toBe(VERSION);
     const bytes = await readFile(join(stagingDir, exeFileName));
     expect(bytes.equals(otherPayload)).toBe(true);
+  });
+
+  it('preserves the staged exe a live swap claim references when this attempt fails', async () => {
+    const stagingDir = getNativeStagingDir(exePath);
+    const exeFileName = `kimi-${VERSION}`;
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === nativeManifestUrl(VERSION)) {
+        const manifestBody = JSON.stringify({
+          version: VERSION,
+          platforms: {
+            'linux-x64': { filename: BINARY_FILENAME, checksum: sha256Hex(PAYLOAD) },
+          },
+        });
+        return { ok: true, status: 200, text: async () => manifestBody, body: null };
+      }
+      if (url === nativeBinaryUrl(VERSION, BINARY_FILENAME)) {
+        // A swap claims the stage mid-download: the metadata is renamed
+        // aside (invisible to the metadata check), the exe still referenced
+        // by the live claim.
+        const { mkdir } = await import('node:fs/promises');
+        await mkdir(stagingDir, { recursive: true });
+        await writeFile(join(stagingDir, exeFileName), PAYLOAD);
+        await writeFile(
+          join(stagingDir, 'staged.json.swap-4321'),
+          JSON.stringify({ exeFileName }),
+        );
+        // …then this attempt's download fails.
+        return { ok: false, status: 503, text: async () => '', body: null };
+      }
+      return { ok: false, status: 404, text: async (): Promise<string> => '', body: null };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      stageNativeUpdate({ version: VERSION, exePath, platform: 'linux', arch: 'x64', fetchImpl }),
+    ).rejects.toThrow(/503/);
+
+    // The exe owned by the live swap survives this attempt's failure cleanup.
+    const bytes = await readFile(join(stagingDir, exeFileName));
+    expect(bytes.equals(PAYLOAD)).toBe(true);
   });
 });
 

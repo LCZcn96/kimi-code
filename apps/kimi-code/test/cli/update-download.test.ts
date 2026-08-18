@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   readUpdateInstallLockVersion: vi.fn(),
   stageNativeUpdate: vi.fn(),
   readStagedNativeUpdate: vi.fn(),
+  promoteStagedUpdateToManual: vi.fn(async () => {}),
 }));
 
 vi.mock('#/cli/update/source', () => ({
@@ -22,6 +23,7 @@ vi.mock('#/cli/update/install-lock', () => ({
 vi.mock('#/cli/update/native-stage', () => ({
   stageNativeUpdate: mocks.stageNativeUpdate,
   readStagedNativeUpdate: mocks.readStagedNativeUpdate,
+  promoteStagedUpdateToManual: mocks.promoteStagedUpdateToManual,
 }));
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
@@ -125,6 +127,18 @@ describe('runUpdateDownloadCommand', () => {
     await expect(runUpdateDownloadCommand('0.7.0')).resolves.toBe(0);
     expect(mocks.stageNativeUpdate).not.toHaveBeenCalled();
     expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('already in progress'));
+    // A background waiter's adoption keeps the auto marker.
+    expect(mocks.promoteStagedUpdateToManual).not.toHaveBeenCalled();
+  });
+
+  it('promotes the adopted stage to manual when an explicit upgrade waited for it', async () => {
+    mocks.tryAcquireUpdateInstallLock.mockResolvedValue(null);
+    mocks.readUpdateInstallLockVersion.mockResolvedValue('0.7.0');
+    mocks.readStagedNativeUpdate.mockResolvedValue({ version: '0.7.0' });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    await expect(runUpdateDownloadCommand('0.7.0', true)).resolves.toBe(0);
+    expect(mocks.stageNativeUpdate).not.toHaveBeenCalled();
+    expect(mocks.promoteStagedUpdateToManual).toHaveBeenCalledTimes(1);
   });
 
   it('takes over when the same-version holder finishes without staging', async () => {

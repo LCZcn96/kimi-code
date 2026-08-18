@@ -17,7 +17,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { readdir, readFile, rename, rmdir, stat, unlink, utimes } from 'node:fs/promises';
+import { link, readdir, readFile, rename, rmdir, stat, unlink, utimes } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -470,9 +470,18 @@ export async function maybeRelaunchWithStagedNativeUpdate(
   } catch (error) {
     // Nothing was moved: startup continues with the old exe. Restore the
     // claimed metadata so a later launch retries the swap (transient locks
-    // clear on reboot) instead of silently dropping the staged update.
+    // clear on reboot) — but only into a still-free state-file path: a
+    // downloader may have published a NEWER stage while we smoke-checked,
+    // and a rename restore would silently replace it. link() is
+    // create-if-absent, so the restore can never overwrite; when the path is
+    // taken, the newer stage wins and ours is discarded.
     logSwap('failed to move exe aside', { exePath: deps.exePath, error: String(error) });
-    await rename(claimedPath, getNativeStagedStateFile(deps.exePath)).catch(() => {});
+    try {
+      await link(claimedPath, getNativeStagedStateFile(deps.exePath));
+      await unlink(claimedPath).catch(() => {});
+    } catch {
+      await discardClaimedUpdate(deps.exePath, claimedPath, staged);
+    }
     return false;
   }
 
