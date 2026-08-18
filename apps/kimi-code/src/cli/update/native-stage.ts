@@ -197,8 +197,11 @@ const STAGING_ORPHAN_GRACE_MS = 60 * 60 * 1000;
  * Remove files in `.staging/` that nothing references: interrupted downloads
  * (`.part`), and staged exes whose `staged.json` never landed (downloader
  * killed between the two writes) — each such orphan is ~180 MB and would
- * otherwise accumulate forever. Swap claim files (`staged.json.swap-*`) and
- * the exes they reference are preserved: another instance may be mid-swap.
+ * otherwise accumulate forever. The exe referenced by the CURRENT
+ * `staged.json` is preserved (a superseded record is only replaced by the
+ * final atomic write, so its payload is still the applicable update while
+ * this run downloads), and so are swap claim files (`staged.json.swap-*`)
+ * with the exes they reference: another instance may be mid-swap.
  */
 async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
   let entries: string[];
@@ -209,7 +212,13 @@ async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
   }
   const keep = new Set<string>([KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME]);
   for (const entry of entries) {
-    if (!entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)) continue;
+    // The current record and every swap claim pin the exe they reference.
+    if (
+      entry !== KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME &&
+      !entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)
+    ) {
+      continue;
+    }
     keep.add(entry);
     const raw = await readFile(join(stagingDir, entry), 'utf-8').catch(() => null);
     if (raw === null) continue;
@@ -221,7 +230,7 @@ async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
         keep.add(basename(exeFileName));
       }
     } catch {
-      // Unparseable claim: keep the claim file itself, touch nothing else.
+      // Unparseable record/claim: keep the file itself, touch nothing else.
     }
   }
   for (const entry of entries) {

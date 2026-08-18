@@ -481,6 +481,35 @@ describe('stageNativeUpdate', () => {
     ).resolves.toBeDefined();
   });
 
+  it('preserves the exe referenced by the current record during orphan cleanup', async () => {
+    const first = await stageNativeUpdate({
+      version: '0.6.0',
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ version: '0.6.0', payload: Buffer.from('old-payload') }),
+    });
+    // Age the staged exe past the orphan grace period: it is still the
+    // applicable update (staged.json references it until the final atomic
+    // write replaces the record), so the cleanup must not reap it.
+    const oldExe = stagedExePath(exePath, first.staged);
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(oldExe, old, old);
+
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    expect(result.status).toBe('staged');
+
+    // Referenced at cleanup time → survives this run (a later cleanup reaps
+    // it once the new record has replaced the old one).
+    await expect(stat(oldExe)).resolves.toBeDefined();
+  });
+
   it('cleans orphaned staging files before downloading, preserving live swap claims', async () => {
     const stagingDir = getNativeStagingDir(exePath);
     const { mkdir } = await import('node:fs/promises');
