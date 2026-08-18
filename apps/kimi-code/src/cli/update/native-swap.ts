@@ -38,6 +38,7 @@ import {
   stagedExePath,
   type StagedNativeUpdate,
 } from './native-stage';
+import { isAutoUpdateDisabledByEnv } from './preflight';
 import { getNativeStagedStateFile, getNativeStagingDir } from '#/utils/paths';
 
 export interface NativeSwapDeps {
@@ -354,6 +355,12 @@ export async function maybeRelaunchWithStagedNativeUpdate(
 ): Promise<boolean> {
   if (!deps.isNative) return false;
   const swapInProgress = await sweepStaleNativeUpdateArtifacts(deps.exePath);
+  if (isAutoUpdateDisabledByEnv(deps.env)) {
+    // The user opted out of automatic updates entirely: leave any staged
+    // payload in place (it still applies on a later launch without the
+    // opt-out) and start the current exe.
+    return false;
+  }
   if (isTruthy(deps.env[KIMI_CODE_UPDATE_REEXEC_ENV])) {
     // Read-once guard: drop it so this session's children (and any nested
     // kimi launches from them) do not inherit the swap skip.

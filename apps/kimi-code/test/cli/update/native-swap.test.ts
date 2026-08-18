@@ -497,6 +497,24 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });
 
+  it('leaves a staged update in place when automatic updates are disabled by env', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(
+      makeDeps(exePath, {
+        spawnImpl,
+        env: { PATH: '/usr/bin', KIMI_CODE_NO_AUTO_UPDATE: '1' },
+      }),
+    );
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    // The payload stays staged for a later launch without the opt-out; the
+    // running exe is untouched.
+    await expect(stat(getNativeStagedStateFile(exePath))).resolves.toBeDefined();
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
+  });
+
   it('stamps the claim with a fresh mtime so a concurrent launch does not misread it as stale', async () => {
     await seedStagedUpdate(exePath, STAGED_VERSION);
     // The metadata may have been staged long before this launch (background

@@ -336,6 +336,22 @@ describe('stageNativeUpdate', () => {
     ).rejects.toThrow(/win32-arm64 not found/);
   });
 
+  it('rejects a traversal version before deriving any filesystem path', async () => {
+    const fetchImpl = mockCdnFetch({ payload: PAYLOAD });
+    await expect(
+      stageNativeUpdate({
+        version: 'x/../../kimi',
+        exePath,
+        platform: 'linux',
+        arch: 'x64',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/invalid semver/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // Nothing was created anywhere.
+    await expect(stat(getNativeStagingDir(exePath))).rejects.toThrow();
+  });
+
   it('supersedes a staged older version', async () => {
     await stageNativeUpdate({
       version: '0.6.0',
@@ -519,6 +535,25 @@ describe('readStagedNativeUpdate / removeStagedNativeUpdate', () => {
     const stagingDir = getNativeStagingDir(exePath);
     await mkdir(stagingDir, { recursive: true });
     await writeFile(getNativeStagedStateFile(exePath), '{not json', 'utf-8');
+    expect(await readStagedNativeUpdate(exePath)).toBeNull();
+  });
+
+  it('returns null when exeFileName is not a plain file name', async () => {
+    const { mkdir } = await import('node:fs/promises');
+    const stagingDir = getNativeStagingDir(exePath);
+    await mkdir(stagingDir, { recursive: true });
+    await writeFile(
+      getNativeStagedStateFile(exePath),
+      JSON.stringify({
+        version: '0.7.0',
+        target: 'linux-x64',
+        exeFileName: '../../evil',
+        sha256: 'a'.repeat(64),
+        exeSize: 42,
+        stagedAt: new Date().toISOString(),
+      }),
+      'utf-8',
+    );
     expect(await readStagedNativeUpdate(exePath)).toBeNull();
   });
 

@@ -31,7 +31,10 @@ const StagedNativeUpdateSchema = z
     version: z.string().min(1),
     target: z.string().min(1),
     /** Base name of the staged executable inside `.staging/`. */
-    exeFileName: z.string().min(1),
+    exeFileName: z
+      .string()
+      .min(1)
+      .refine((value) => basename(value) === value, { error: 'must be a plain file name' }),
     /** sha256 of the staged binary (the manifest's checksum). */
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     exeSize: z.number().int().min(1),
@@ -283,6 +286,12 @@ export async function stageNativeUpdate(
 ): Promise<StageNativeUpdateResult> {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
+  // Validate BEFORE anything derives a filesystem path from the version: the
+  // hidden download command takes it from argv, and a non-semver could carry
+  // path traversal into the cleanup paths below.
+  if (valid(options.version) === null) {
+    throw new Error(`invalid semver for native staging: ${JSON.stringify(options.version)}`);
+  }
   const fetchImpl = options.fetchImpl ?? fetch;
   const target = `${platform}-${arch}`;
   const exeFileName = stagedExeFileName(options.version, platform);
