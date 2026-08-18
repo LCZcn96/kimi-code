@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   readUpdateInstallLockVersion: vi.fn(),
   stageNativeUpdate: vi.fn(),
   readStagedNativeUpdate: vi.fn(),
-  promoteStagedUpdateToManual: vi.fn(async () => {}),
+  promoteStagedUpdateToManual: vi.fn(async () => true),
 }));
 
 vi.mock('#/cli/update/source', () => ({
@@ -139,6 +139,22 @@ describe('runUpdateDownloadCommand', () => {
     await expect(runUpdateDownloadCommand('0.7.0', true)).resolves.toBe(0);
     expect(mocks.stageNativeUpdate).not.toHaveBeenCalled();
     expect(mocks.promoteStagedUpdateToManual).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps waiting until the manual promotion is confirmed persisted', async () => {
+    // The first promotion attempt loses a race with a concurrent swap's
+    // claim/restore cycle; the loop must not report adoption until the
+    // marker is confirmed.
+    mocks.tryAcquireUpdateInstallLock.mockResolvedValue(null);
+    mocks.readUpdateInstallLockVersion.mockResolvedValue('0.7.0');
+    mocks.readStagedNativeUpdate.mockResolvedValue({ version: '0.7.0' });
+    mocks.promoteStagedUpdateToManual
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    await expect(runUpdateDownloadCommand('0.7.0', true)).resolves.toBe(0);
+    expect(mocks.stageNativeUpdate).not.toHaveBeenCalled();
+    expect(mocks.promoteStagedUpdateToManual).toHaveBeenCalledTimes(2);
   });
 
   it('takes over when the same-version holder finishes without staging', async () => {

@@ -88,19 +88,34 @@ export async function readStagedNativeUpdate(
 }
 
 /**
- * Mark the currently staged update as manual. Used when an explicit
- * `kimi upgrade` adopts a payload the passive downloader staged (already on
- * disk, or still downloading): the marker lets the startup swap apply it even
- * under the env opt-out. Best-effort promotion happens via the same atomic
- * metadata write as staging.
+ * Mark the currently staged update as manual, confirming the marker actually
+ * persisted. Used when an explicit `kimi upgrade` adopts a payload the
+ * passive downloader staged (already on disk, or still downloading): the
+ * marker lets the startup swap apply it even under the env opt-out.
+ *
+ * Returns false when the stage is concurrently claimed by a startup swap
+ * (nothing to promote) or a confirming read never sees the marker — callers
+ * must NOT report adoption for a promotion that never landed. The write and
+ * the confirmation use the same atomic metadata path as staging; a swap that
+ * claims the PROMOTED file proceeds with the marker, which is the desired
+ * outcome anyway.
  */
-export async function promoteStagedUpdateToManual(exePath: string): Promise<void> {
-  const staged = await readStagedNativeUpdate(exePath);
-  if (staged === null || staged.manual === true) return;
-  await writeJsonFile(getNativeStagedStateFile(exePath), StagedNativeUpdateSchema, {
-    ...staged,
-    manual: true,
-  });
+export async function promoteStagedUpdateToManual(exePath: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const staged = await readStagedNativeUpdate(exePath);
+    if (staged === null) return false;
+    if (staged.manual === true) return true;
+    await writeJsonFile(getNativeStagedStateFile(exePath), StagedNativeUpdateSchema, {
+      ...staged,
+      manual: true,
+    });
+    // Confirm: a concurrent claim/restore cycle could leave unpromoted
+    // content behind (the restore never overwrites, so a confirmed marker
+    // cannot be displaced afterwards).
+    const confirmed = await readStagedNativeUpdate(exePath);
+    if (confirmed?.manual === true) return true;
+  }
+  return false;
 }
 
 /** Stream a file's sha256 as hex; null when the file cannot be read. */
@@ -317,13 +332,17 @@ export async function stageNativeUpdate(
 
   const existing = await readStagedNativeUpdate(options.exePath);
   if (existing !== null && existing.version === options.version) {
-    // An explicit upgrade adopts an auto-staged payload: promote the marker
-    // so the startup swap applies it under the env opt-out as well.
+    // An explicit upgrade adopts an auto-staged payload — but only report
+    // the adoption once the manual marker is confirmed persisted. A stage
+    // currently being claimed by a startup swap cannot be promoted here;
+    // fall through and stage afresh instead.
     if (options.manual === true && existing.manual !== true) {
-      await promoteStagedUpdateToManual(options.exePath);
-      return { status: 'already-staged', staged: { ...existing, manual: true } };
+      if (await promoteStagedUpdateToManual(options.exePath)) {
+        return { status: 'already-staged', staged: { ...existing, manual: true } };
+      }
+    } else {
+      return { status: 'already-staged', staged: existing };
     }
-    return { status: 'already-staged', staged: existing };
   }
 
   // A different version was staged earlier and never swapped (skipped

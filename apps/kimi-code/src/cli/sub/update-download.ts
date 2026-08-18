@@ -34,19 +34,33 @@ type StagedUpdateWait =
  * already held for the caller. The lock goes stale the moment its holder dies
  * (see install-lock), so a killed downloader cannot strand a foreground
  * `kimi upgrade` in this loop.
+ *
+ * A manual (explicit-upgrade) waiter adopts only after CONFIRMING the manual
+ * marker landed on the stage — a concurrent startup swap may be claiming and
+ * restoring the metadata right now, and reporting adoption for a promotion
+ * that never persisted would strand the update under the env opt-out.
  */
 async function waitForStagedUpdate(
   version: string,
   exePath: string,
+  manual: boolean,
 ): Promise<StagedUpdateWait> {
   for (;;) {
     const staged = await readStagedNativeUpdate(exePath);
-    if (staged !== null && staged.version === version) return { status: 'staged' };
-    // Poll the acquisition itself: while the holder lives its lock stays
-    // fresh and this returns null without side effects; when the holder
-    // finishes (or dies) without staging, the takeover happens right here.
-    const lock = await tryAcquireUpdateInstallLock({ version });
-    if (lock !== null) return { status: 'takeover', lock };
+    if (staged !== null && staged.version === version) {
+      if (!manual || (await promoteStagedUpdateToManual(exePath))) {
+        return { status: 'staged' };
+      }
+      // The stage is being claimed/restored by a concurrent swap — the next
+      // poll either promotes the restored stage or takes over once it is
+      // gone.
+    } else {
+      // Poll the acquisition itself: while the holder lives its lock stays
+      // fresh and this returns null without side effects; when the holder
+      // finishes (or dies) without staging, the takeover happens right here.
+      const lock = await tryAcquireUpdateInstallLock({ version });
+      if (lock !== null) return { status: 'takeover', lock };
+    }
     await new Promise((resolve) => {
       setTimeout(resolve, LOCK_HELD_POLL_INTERVAL_MS);
     });
@@ -71,11 +85,8 @@ export async function runUpdateDownloadCommand(
       out.write(
         `A download of Kimi Code ${version} is already in progress; waiting for it to finish…\n`,
       );
-      const wait = await waitForStagedUpdate(version, process.execPath);
+      const wait = await waitForStagedUpdate(version, process.execPath, manual);
       if (wait.status === 'staged') {
-        // An explicit upgrade adopting a background-staged payload promotes
-        // its marker, so the swap applies it under the env opt-out as well.
-        if (manual) await promoteStagedUpdateToManual(process.execPath);
         out.write(`Kimi Code ${version} is downloaded; it applies on the next start.\n`);
         return 0;
       }
