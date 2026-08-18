@@ -499,7 +499,12 @@ export function isAutoUpdateDisabledByEnv(env: NodeJS.ProcessEnv = process.env):
   return truthy(env['KIMI_CODE_NO_AUTO_UPDATE']) || truthy(env['KIMI_CLI_NO_AUTO_UPDATE']);
 }
 
-async function shouldAutoInstallUpdates(): Promise<boolean> {
+/**
+ * The persisted `[upgrade].auto_install` preference (defaults to true when
+ * the config cannot be read). Gates the passive background install — and the
+ * startup swap of automatically staged payloads (see `native-swap.ts`).
+ */
+export async function shouldAutoInstallUpdates(): Promise<boolean> {
   try {
     const config = await loadTuiConfig();
     return config.upgrade.autoInstall;

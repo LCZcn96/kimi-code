@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { nativeBinaryUrl, nativeManifestUrl } from '#/cli/update/native-manifest';
 import {
   readStagedNativeUpdate,
-  removeStagedNativeUpdate,
   stagedExePath,
   stageNativeUpdate,
 } from '#/cli/update/native-stage';
@@ -417,9 +416,11 @@ describe('stageNativeUpdate', () => {
 
     expect(result.status).toBe('staged');
     expect(result.staged.version).toBe(VERSION);
+    // The older stage's exe is left in place (it may be claim-held by a live
+    // swap); an unreferenced one is reaped by a later orphan cleanup.
     await expect(
       stat(join(getNativeStagingDir(exePath), 'kimi-0.6.0')),
-    ).rejects.toThrow();
+    ).resolves.toBeDefined();
   });
 
   it('cleans orphaned staging files before downloading, preserving live swap claims', async () => {
@@ -609,7 +610,7 @@ describe('stageNativeUpdate', () => {
   });
 });
 
-describe('readStagedNativeUpdate / removeStagedNativeUpdate', () => {
+describe('readStagedNativeUpdate', () => {
   let workDir: string;
   let exePath: string;
 
@@ -659,18 +660,5 @@ describe('readStagedNativeUpdate / removeStagedNativeUpdate', () => {
     });
     await writeFile(stagedExePath(exePath, staged), Buffer.alloc(PAYLOAD.length + 1));
     expect(await readStagedNativeUpdate(exePath)).toBeNull();
-  });
-
-  it('removes staged artifacts', async () => {
-    await stageNativeUpdate({
-      version: VERSION,
-      exePath,
-      platform: 'linux',
-      arch: 'x64',
-      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
-    });
-    await removeStagedNativeUpdate(exePath);
-    expect(await readStagedNativeUpdate(exePath)).toBeNull();
-    await expect(stat(getNativeStagingDir(exePath))).rejects.toThrow();
   });
 });

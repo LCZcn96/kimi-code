@@ -37,7 +37,7 @@ import {
   stagedExePath,
   type StagedNativeUpdate,
 } from './native-stage';
-import { isAutoUpdateDisabledByEnv } from './preflight';
+import { isAutoUpdateDisabledByEnv, shouldAutoInstallUpdates } from './preflight';
 import { getNativeStagedStateFile, getNativeStagingDir } from '#/utils/paths';
 
 export interface NativeSwapDeps {
@@ -364,13 +364,15 @@ export async function maybeRelaunchWithStagedNativeUpdate(
 ): Promise<boolean> {
   if (!deps.isNative) return false;
   const swapInProgress = await sweepStaleNativeUpdateArtifacts(deps.exePath);
-  if (isAutoUpdateDisabledByEnv(deps.env)) {
-    // The opt-out targets AUTOMATIC updates. A payload staged by an explicit
-    // `kimi upgrade` still applies — the user asked for it; a
-    // background-staged one stays in place for a later launch without the
-    // opt-out.
-    const staged = await readStagedNativeUpdate(deps.exePath);
-    if (staged?.manual !== true) return false;
+  // An automatically staged payload applies only while automatic updates are
+  // enabled — both the env opt-out and the persisted `[upgrade]
+  // auto_install = false` preference gate it. A stage produced by an explicit
+  // `kimi upgrade` (manual) always applies. The pending read happens once
+  // here; the claim below re-reads.
+  const pending = await readStagedNativeUpdate(deps.exePath);
+  if (pending !== null && pending.manual !== true) {
+    if (isAutoUpdateDisabledByEnv(deps.env)) return false;
+    if (!(await shouldAutoInstallUpdates())) return false;
   }
   if (isTruthy(deps.env[KIMI_CODE_UPDATE_REEXEC_ENV])) {
     // Read-once guard: drop it so this session's children (and any nested

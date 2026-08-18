@@ -103,25 +103,6 @@ export async function promoteStagedUpdateToManual(exePath: string): Promise<void
   });
 }
 
-/** Remove staged.json + the staged exe; used on downgrade-guard discards and swap failures. */
-export async function removeStagedNativeUpdate(
-  exePath: string,
-  knownStaged?: StagedNativeUpdate,
-): Promise<void> {
-  const stagingDir = getNativeStagingDir(exePath);
-  // The swap flow claims staged.json by renaming it away first, so callers
-  // there must pass the already-read metadata — discovering it from the
-  // (now missing) state file would find nothing and leak the staged exe.
-  const staged = knownStaged ?? (await readStagedNativeUpdate(exePath).catch(() => null));
-  if (staged !== null) {
-    await rm(stagedExePath(exePath, staged), { force: true }).catch(() => {});
-  }
-  await rm(getNativeStagedStateFile(exePath), { force: true }).catch(() => {});
-  // Best effort: drop the staging dir itself when empty (leftover `.part`
-  // files keep it around; the downloader truncates those on the next run).
-  await rmdir(stagingDir).catch(() => {});
-}
-
 /** Stream a file's sha256 as hex; null when the file cannot be read. */
 export async function hashFileSha256(filePath: string): Promise<string | null> {
   try {
@@ -363,9 +344,12 @@ export async function stageNativeUpdate(
   }
 
   // A different version was staged earlier and never swapped (skipped
-  // rollout, user stayed offline, …): supersede it before writing ours.
+  // rollout, user stayed offline, …). Only its metadata record is removed —
+  // the exe stays: deleting it could pull the payload from a live swap that
+  // claimed the old stage, and an unreferenced exe is reaped by a later
+  // orphan cleanup. The metadata write below atomically replaces the record.
   if (existing !== null) {
-    await removeStagedNativeUpdate(options.exePath);
+    await rm(getNativeStagedStateFile(options.exePath), { force: true }).catch(() => {});
   }
   const stagingDir = getNativeStagingDir(options.exePath);
   await mkdir(stagingDir, { recursive: true });

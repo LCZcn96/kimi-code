@@ -562,6 +562,32 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
   });
 
+  it('leaves an automatic stage in place when auto_install is disabled in the tui config', async () => {
+    await mkdir(homeDir, { recursive: true });
+    await writeFile(join(homeDir, 'tui.toml'), '[upgrade]\nauto_install = false\n', 'utf-8');
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    await expect(stat(getNativeStagedStateFile(exePath))).resolves.toBeDefined();
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
+  });
+
+  it('applies a manual stage even when auto_install is disabled in the tui config', async () => {
+    await mkdir(homeDir, { recursive: true });
+    await writeFile(join(homeDir, 'tui.toml'), '[upgrade]\nauto_install = false\n', 'utf-8');
+    await seedStagedUpdate(exePath, STAGED_VERSION, { manual: true });
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(true);
+    expect(calls).toHaveLength(2); // smoke check + re-exec
+    const newExe = await readFile(exePath);
+    expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
+  });
+
   it('does not overwrite a concurrently published stage when restoring the claim', async () => {
     await seedStagedUpdate(exePath, STAGED_VERSION);
     // The exe move (step 2) fails.
