@@ -1,23 +1,3 @@
-/**
- * `auth` domain (cross-cutting) — app-scope OAuth + auth summary contracts.
- *
- * Defines the public contracts of authentication: the `AuthStatus` model, the
- * `IOAuthService` used to drive device-code login / logout / flow inspection,
- * to resolve a per-provider `BearerTokenProvider`, and to refresh a managed
- * OAuth provider's server-side model configuration, the `IOAuthToolkit`
- * device-code client that `IOAuthService` delegates the OAuth protocol to, and
- * the `IAuthSummaryService` used to summarize auth state and provide the
- * prompt auth-readiness gate. App-scoped — shared across the application.
- *
- * Region handling: `startLogin` accepts an explicit `region` choice that maps
- * to the region profile's OAuth/API hosts (passed for 'cn' too, so switching
- * back overrides a persisted overseas login; `KIMI_CODE_OAUTH_HOST` /
- * `KIMI_CODE_BASE_URL` env overrides keep priority). `getRegion()` resolves
- * the client region as env override → persisted login host → persisted
- * default-slot login key → install marker (off when the host sets
- * `KIMI_CODE_REGION_MARKER=off`, e.g. the desktop embedded server) → 'cn'.
- */
-
 import type {
   AuthManagedUserInfoResult,
   AuthManagedUsageResult,

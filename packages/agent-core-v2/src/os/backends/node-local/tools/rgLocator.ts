@@ -1,16 +1,3 @@
-/**
- * `fileTools` domain — shared ripgrep (`rg`) binary locator.
- *
- * Resolves the `rg` command, preferring a file found on
- * PATH, then the vendor hook, then the app cache, and finally bootstrapping a
- * pinned ripgrep archive into `<KIMI_CODE_HOME|~/.kimi-code>/bin` when the
- * caller permits it. File lookup intentionally avoids spawning `rg --version`
- * so tool resolution has the same observable shape as v1. The bootstrap
- * download base URL derives from the resolved Kimi region profile's
- * `cdnBase`; this os-layer module has no config access, so region resolution
- * is env override > install marker > cn default.
- */
-
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';

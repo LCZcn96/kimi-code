@@ -1,13 +1,3 @@
-/**
- * Covers: rg-locator (ripgrep hybrid binary resolution).
- *
- * Pure-lookup pins (no real CDN download):
- *   - `findExistingRg` returns undefined when PATH + share-bin are both empty
- *   - Resolves from `<shareDir>/bin/rg` when that binary exists
- *   - Prefers system PATH over share-dir cache when both are available
- *   - `rgUnavailableMessage` surfaces the underlying cause + install hints
- */
-
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -357,7 +347,6 @@ describe('ensureRgPath download branch', () => {
     const savedHome = process.env['KIMI_CODE_HOME'];
     delete process.env['KIMI_CODE_OAUTH_HOST'];
     delete process.env['KIMI_OAUTH_HOST'];
-    // A home dir without a `region` marker file keeps the default resolution.
     process.env['KIMI_CODE_HOME'] = fakeShare;
     try {
       const body = bodyFromBuffer(Buffer.from('not a real archive', 'utf8'));

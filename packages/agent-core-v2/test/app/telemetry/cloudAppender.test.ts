@@ -66,8 +66,6 @@ describe('CloudAppender', () => {
 
   beforeEach(() => {
     homeDir = mkdtempSync(join(tmpdir(), 'cloud-appender-'));
-    // Pin region resolution to the cn default: no env override, and a home
-    // dir without a `region` install marker.
     savedOauthHost = process.env['KIMI_CODE_OAUTH_HOST'];
     savedLegacyOauthHost = process.env['KIMI_OAUTH_HOST'];
     savedKimiHome = process.env['KIMI_CODE_HOME'];
