@@ -216,9 +216,13 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(relaunched).toBe(false);
     expect(calls).toHaveLength(0);
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
-    // Staged artifacts are gone, so future launches do not retry the discard.
+    // The metadata is gone, so future launches do not retry the discard; the
+    // exe is left for the downloader's orphan cleanup (it may belong to a
+    // freshly republished stage).
     await expect(stat(getNativeStagedStateFile(exePath))).rejects.toThrow();
-    await expect(stat(getNativeStagingDir(exePath))).rejects.toThrow();
+    await expect(
+      stat(join(getNativeStagingDir(exePath), stagedExeFileName(CURRENT_VERSION, 'linux'))),
+    ).resolves.toBeDefined();
   });
 
   it('discards staged metadata whose exe is missing', async () => {
@@ -270,7 +274,8 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(calls).toHaveLength(1); // smoke only, no re-exec
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
     await expect(stat(getNativeStagedStateFile(exePath))).rejects.toThrow();
-    await expect(stat(getNativeStagingDir(exePath))).rejects.toThrow();
+    // The exe is left for the downloader's orphan cleanup (see the
+    // not-newer discard test).
 
     const state = await readUpdateInstallState();
     expect(state.lastFailure).toMatchObject({ version: STAGED_VERSION, attempts: 1 });
@@ -513,10 +518,11 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
 
     expect(relaunched).toBe(false);
     expect(calls).toHaveLength(0);
-    // The corrupt stage is discarded so a later cycle re-downloads it; the
+    // The corrupt stage's metadata is discarded so a later cycle re-stages
+    // it; the exe is left for the downloader's orphan cleanup, and the
     // running exe is never touched.
     await expect(stat(getNativeStagedStateFile(exePath))).rejects.toThrow();
-    await expect(stat(stagedExe)).rejects.toThrow();
+    await expect(stat(stagedExe)).resolves.toBeDefined();
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });
 
@@ -586,13 +592,14 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
 
     expect(relaunched).toBe(false);
-    // The newer stage survived; the older claim was discarded instead of
-    // clobbering it, and the running exe never moved.
+    // The newer stage survived; the older claim's metadata was discarded
+    // instead of clobbering it (its exe is left for the downloader's orphan
+    // cleanup), and the running exe never moved.
     const staged = await readStagedNativeUpdate(exePath);
     expect(staged?.version).toBe(v2);
     await expect(
       stat(join(getNativeStagingDir(exePath), stagedExeFileName(STAGED_VERSION, 'linux'))),
-    ).rejects.toThrow();
+    ).resolves.toBeDefined();
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });
 

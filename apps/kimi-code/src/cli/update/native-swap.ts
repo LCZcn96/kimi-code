@@ -203,30 +203,21 @@ async function claimStagedUpdate(exePath: string): Promise<ClaimedStaged | null>
     logSwap('staged exe failed checksum verification, discarding', {
       version: staged.version,
     });
-    await discardClaimedUpdate(exePath, claimedPath, staged);
+    await discardClaimedUpdate(claimedPath);
     return null;
   }
   return { staged, claimedPath };
 }
 
 /**
- * Delete a claimed stage's artifacts — never anything published meanwhile:
- * after our claim the state-file path is free, so a downloader may have
- * published a NEWER stage there, and the exe our claim references may belong
- * to it (same version re-staged under the same name).
+ * Discard a claimed stage: only the claimed metadata file is removed — never
+ * the staged exe. A same-version downloader may have just renamed its fresh
+ * payload onto that path (payloads publish before their metadata), and
+ * genuinely unreferenced exes are reaped by the downloader's own orphan
+ * cleanup before its next stage.
  */
-async function discardClaimedUpdate(
-  exePath: string,
-  claimedPath: string,
-  staged: StagedNativeUpdate,
-): Promise<void> {
+async function discardClaimedUpdate(claimedPath: string): Promise<void> {
   await unlink(claimedPath).catch(() => {});
-  const current = await readStagedNativeUpdate(exePath).catch(() => null);
-  if (current?.exeFileName !== staged.exeFileName) {
-    await unlink(stagedExePath(exePath, staged)).catch(() => {});
-  }
-  // Best effort: drop the staging dir itself when empty.
-  await rmdir(getNativeStagingDir(exePath)).catch(() => {});
 }
 
 async function rollback(bakPath: string, exePath: string): Promise<boolean> {
@@ -403,7 +394,7 @@ export async function maybeRelaunchWithStagedNativeUpdate(
   const spawnImpl = deps.spawnImpl ?? spawn;
 
   const discard = async (): Promise<boolean> => {
-    await discardClaimedUpdate(deps.exePath, claimedPath, staged);
+    await discardClaimedUpdate(claimedPath);
     return false;
   };
 
@@ -461,7 +452,7 @@ export async function maybeRelaunchWithStagedNativeUpdate(
       await link(claimedPath, getNativeStagedStateFile(deps.exePath));
       await unlink(claimedPath).catch(() => {});
     } catch {
-      await discardClaimedUpdate(deps.exePath, claimedPath, staged);
+      await discardClaimedUpdate(claimedPath);
     }
     return false;
   }
