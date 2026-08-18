@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -116,17 +117,17 @@ function createSpawnMock(routes: {
 async function seedStagedUpdate(exePath: string, version: string): Promise<void> {
   const stagingDir = getNativeStagingDir(exePath);
   await mkdir(stagingDir, { recursive: true });
-  await writeFile(
-    join(stagingDir, stagedExeFileName(version, 'linux')),
-    Buffer.alloc(STAGED_EXE_SIZE, 1),
-  );
+  const exeBytes = Buffer.alloc(STAGED_EXE_SIZE, 1);
+  await writeFile(join(stagingDir, stagedExeFileName(version, 'linux')), exeBytes);
   await writeFile(
     getNativeStagedStateFile(exePath),
     `${JSON.stringify({
       version,
       target: 'linux-x64',
       exeFileName: stagedExeFileName(version, 'linux'),
-      sha256: 'a'.repeat(64),
+      // The swap re-verifies the staged bytes against this checksum, so the
+      // seed must record the payload's real sha256.
+      sha256: createHash('sha256').update(exeBytes).digest('hex'),
       exeSize: STAGED_EXE_SIZE,
       stagedAt: new Date().toISOString(),
     }, null, 2)}\n`,
@@ -476,6 +477,24 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(calls).toHaveLength(2); // smoke check + re-exec
     const newExe = await readFile(exePath);
     expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
+  });
+
+  it('discards a staged update whose exe fails the recorded checksum', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    // Same size, different bytes — post-download on-disk damage.
+    const stagingDir = getNativeStagingDir(exePath);
+    const stagedExe = join(stagingDir, stagedExeFileName(STAGED_VERSION, 'linux'));
+    await writeFile(stagedExe, Buffer.alloc(STAGED_EXE_SIZE, 2));
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
+    // The corrupt stage is discarded so a later cycle re-downloads it; the
+    // running exe is never touched.
+    await expect(stat(getNativeStagedStateFile(exePath))).rejects.toThrow();
+    await expect(stat(stagedExe)).rejects.toThrow();
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });
 
   it('stamps the claim with a fresh mtime so a concurrent launch does not misread it as stale', async () => {

@@ -32,6 +32,7 @@ import {
 
 import { readUpdateInstallState, writeUpdateInstallState } from './install-state';
 import {
+  hashFileSha256,
   readStagedNativeUpdate,
   removeStagedNativeUpdate,
   stagedExePath,
@@ -164,6 +165,20 @@ async function claimStagedUpdate(exePath: string): Promise<ClaimedStaged | null>
   const stateFile = getNativeStagedStateFile(exePath);
   const staged = await readStagedNativeUpdate(exePath, stateFile);
   if (staged === null) return null;
+  // Re-verify the staged bytes against the recorded checksum before claiming:
+  // the exe could have been damaged on disk after the download verified it
+  // (corruption, a non-durable interrupted write), and the `--version` smoke
+  // check alone would not catch every such case. Only paid when an update is
+  // actually pending. A mismatch discards the stage so a later cycle
+  // re-downloads it — this is not a swap failure.
+  const digest = await hashFileSha256(stagedExePath(exePath, staged));
+  if (digest !== staged.sha256) {
+    logSwap('staged exe failed checksum verification, discarding', {
+      version: staged.version,
+    });
+    await removeStagedNativeUpdate(exePath, staged);
+    return null;
+  }
 
   const claimedPath = `${stateFile}.swap-${process.pid}`;
   try {

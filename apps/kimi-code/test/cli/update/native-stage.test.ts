@@ -429,6 +429,76 @@ describe('stageNativeUpdate', () => {
     await expect(stat(join(stagingDir, 'user-notes.txt'))).resolves.toBeDefined();
     await expect(stat(join(stagingDir, 'some-other-tool', 'cache.bin'))).resolves.toBeDefined();
   });
+
+  it('cleans orphans with prerelease and build-metadata versions', async () => {
+    const stagingDir = getNativeStagingDir(exePath);
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(stagingDir, { recursive: true });
+    await writeFile(join(stagingDir, 'kimi-1.2.3-rc.1'), Buffer.from('orphan'));
+    await writeFile(join(stagingDir, 'kimi-1.2.3+build.5.exe'), Buffer.from('orphan'));
+    await writeFile(join(stagingDir, 'kimi-1.2.3-rc.1.123.0.part'), Buffer.from('partial'));
+
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    expect(result.status).toBe('staged');
+
+    await expect(stat(join(stagingDir, 'kimi-1.2.3-rc.1'))).rejects.toThrow();
+    await expect(stat(join(stagingDir, 'kimi-1.2.3+build.5.exe'))).rejects.toThrow();
+    await expect(stat(join(stagingDir, 'kimi-1.2.3-rc.1.123.0.part'))).rejects.toThrow();
+  });
+
+  it("preserves another worker's staged result when this attempt fails", async () => {
+    const stagingDir = getNativeStagingDir(exePath);
+    const exeFileName = `kimi-${VERSION}`;
+    const otherPayload = Buffer.from('other-worker-payload');
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === nativeManifestUrl(VERSION)) {
+        const manifestBody = JSON.stringify({
+          version: VERSION,
+          platforms: {
+            'linux-x64': { filename: BINARY_FILENAME, checksum: sha256Hex(PAYLOAD) },
+          },
+        });
+        return { ok: true, status: 200, text: async () => manifestBody, body: null };
+      }
+      if (url === nativeBinaryUrl(VERSION, BINARY_FILENAME)) {
+        // A concurrent worker publishes its valid stage mid-download…
+        const { mkdir } = await import('node:fs/promises');
+        await mkdir(stagingDir, { recursive: true });
+        await writeFile(join(stagingDir, exeFileName), otherPayload);
+        await writeFile(
+          getNativeStagedStateFile(exePath),
+          `${JSON.stringify({
+            version: VERSION,
+            target: 'linux-x64',
+            exeFileName,
+            sha256: sha256Hex(otherPayload),
+            exeSize: otherPayload.length,
+            stagedAt: new Date().toISOString(),
+          })}\n`,
+        );
+        // …then this attempt's download fails.
+        return { ok: false, status: 503, text: async () => '', body: null };
+      }
+      return { ok: false, status: 404, text: async (): Promise<string> => '', body: null };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      stageNativeUpdate({ version: VERSION, exePath, platform: 'linux', arch: 'x64', fetchImpl }),
+    ).rejects.toThrow(/503/);
+
+    // The concurrent worker's stage survives this attempt's failure cleanup.
+    const staged = await readStagedNativeUpdate(exePath);
+    expect(staged?.version).toBe(VERSION);
+    const bytes = await readFile(join(stagingDir, exeFileName));
+    expect(bytes.equals(otherPayload)).toBe(true);
+  });
 });
 
 describe('readStagedNativeUpdate / removeStagedNativeUpdate', () => {

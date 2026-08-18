@@ -9,9 +9,11 @@
  */
 
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { chmod, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, unlink } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
+import { valid } from 'semver';
 import { z } from 'zod';
 
 import { KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME } from '#/constant/app';
@@ -95,14 +97,42 @@ export async function removeStagedNativeUpdate(
   await rmdir(stagingDir).catch(() => {});
 }
 
+/** Stream a file's sha256 as hex; null when the file cannot be read. */
+export async function hashFileSha256(filePath: string): Promise<string | null> {
+  try {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(filePath)) {
+      hash.update(chunk as Buffer);
+    }
+    return hash.digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Entries the updater itself owns inside `.staging/`: staged executables
- * (`kimi-<version>[.exe]`) and download intermediates
- * (`kimi-<version>[.exe][.<pid>.<n>].part`). Cleanup must positively match
- * this pattern — anything else in the directory belongs to the user or
- * another tool and is left alone.
+ * Whether a `.staging/` entry is an updater-owned artifact: a staged
+ * executable (`kimi-<version>[.exe]`) or a download intermediate
+ * (`kimi-<version>[.exe][.<pid>.<n>].part`). Ownership derives from the
+ * semver/file-name contract (prerelease and build metadata included), so
+ * foreign files in the directory are never matched.
  */
-const UPDATER_OWNED_STAGING_FILE = /^kimi-\d+\.\d+\.\d+(\.exe)?((\.\d+\.\d+)?\.part)?$/;
+function isUpdaterOwnedStagingFile(entry: string): boolean {
+  if (!entry.startsWith('kimi-')) return false;
+  let name = entry.slice('kimi-'.length);
+  const isPart = name.endsWith('.part');
+  if (isPart) name = name.slice(0, -'.part'.length);
+  const candidates = isPart
+    ? // New-style intermediates carry a unique worker infix (.<pid>.<n>)
+      // after any .exe — try with and without stripping it (the infix is
+      // itself dot-numeric, which is ambiguous with prerelease suffixes).
+      [name, name.replace(/\.\d+\.\d+$/, '')]
+    : [name];
+  return candidates.some((candidate) => {
+    const base = candidate.endsWith('.exe') ? candidate.slice(0, -'.exe'.length) : candidate;
+    return valid(base) !== null;
+  });
+}
 
 /**
  * Remove files in `.staging/` that nothing references: interrupted downloads
@@ -140,7 +170,7 @@ async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
     // Only ever unlink updater-owned artifact names (files, never
     // directories): the staging dir sits next to the exe and may contain
     // data that is not ours.
-    if (!UPDATER_OWNED_STAGING_FILE.test(entry)) continue;
+    if (!isUpdaterOwnedStagingFile(entry)) continue;
     await unlink(join(stagingDir, entry)).catch(() => {});
   }
 }
@@ -321,7 +351,16 @@ export async function stageNativeUpdate(
     return { status: 'staged', staged };
   } catch (error) {
     await rm(partPath, { force: true }).catch(() => {});
-    await removeStagedNativeUpdate(options.exePath);
+    // Remove only what THIS attempt owns. Another worker may have staged the
+    // same version while we were downloading — that result belongs to the
+    // current metadata, not to this failing attempt.
+    const current = await readStagedNativeUpdate(options.exePath).catch(() => null);
+    if (current?.exeFileName !== staged.exeFileName) {
+      await rm(stagedExePath(options.exePath, staged), { force: true }).catch(() => {});
+    }
+    // Best effort: drop the staging dir itself when empty (a concurrent
+    // worker's files keep it around — rmdir only removes empty dirs).
+    await rmdir(getNativeStagingDir(options.exePath)).catch(() => {});
     throw error;
   }
 }
