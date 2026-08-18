@@ -160,6 +160,14 @@ function isUpdaterOwnedStagingFile(entry: string): boolean {
 }
 
 /**
+ * An unreferenced artifact is only deleted once it is older than this. A
+ * concurrent worker's payload publishes BEFORE its metadata, so a freshly
+ * renamed staged exe can look like an orphan for a moment; publication takes
+ * milliseconds, so anything unreferenced AND old is definitively abandoned.
+ */
+const STAGING_ORPHAN_GRACE_MS = 60 * 60 * 1000;
+
+/**
  * Remove files in `.staging/` that nothing references: interrupted downloads
  * (`.part`), and staged exes whose `staged.json` never landed (downloader
  * killed between the two writes) — each such orphan is ~180 MB and would
@@ -196,7 +204,13 @@ async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
     // directories): the staging dir sits next to the exe and may contain
     // data that is not ours.
     if (!isUpdaterOwnedStagingFile(entry)) continue;
-    await unlink(join(stagingDir, entry)).catch(() => {});
+    const full = join(stagingDir, entry);
+    const info = await stat(full).catch(() => null);
+    if (info === null) continue;
+    // Too young to be abandoned — a concurrent worker may be about to
+    // publish its metadata.
+    if (Date.now() - info.mtimeMs < STAGING_ORPHAN_GRACE_MS) continue;
+    await unlink(full).catch(() => {});
   }
 }
 

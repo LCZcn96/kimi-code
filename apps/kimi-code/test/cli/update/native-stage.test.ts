@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,6 +77,13 @@ const BINARY_FILENAME = 'kimi-code-linux-x64';
 
 function sha256Hex(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex');
+}
+
+/** Write a staging artifact old enough for the orphan sweep to reap it. */
+async function agedOrphan(path: string, content: string | Buffer): Promise<void> {
+  await writeFile(path, content);
+  const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  await utimes(path, old, old);
 }
 
 interface MockCdnOptions {
@@ -420,9 +427,9 @@ describe('stageNativeUpdate', () => {
     const { mkdir } = await import('node:fs/promises');
     await mkdir(stagingDir, { recursive: true });
     // Orphans from interrupted earlier runs: a referenced-by-nothing exe and
-    // a stale .part download.
-    await writeFile(join(stagingDir, 'kimi-9.9.9'), Buffer.from('orphan-exe'));
-    await writeFile(join(stagingDir, 'kimi-9.9.9.part'), Buffer.from('partial'));
+    // a stale .part download (aged past the orphan grace period).
+    await agedOrphan(join(stagingDir, 'kimi-9.9.9'), Buffer.from('orphan-exe'));
+    await agedOrphan(join(stagingDir, 'kimi-9.9.9.part'), Buffer.from('partial'));
     // A live swap claim referencing its own staged exe must survive.
     const claimExe = 'kimi-8.8.8';
     await writeFile(join(stagingDir, claimExe), Buffer.from('swap-in-progress'));
@@ -430,6 +437,10 @@ describe('stageNativeUpdate', () => {
       join(stagingDir, 'staged.json.swap-1234'),
       JSON.stringify({ exeFileName: claimExe }),
     );
+    // A fresh unreferenced exe is too young to be reaped: a concurrent
+    // worker may be about to publish its metadata.
+    const youngExe = 'kimi-7.7.7';
+    await writeFile(join(stagingDir, youngExe), Buffer.from('just-published'));
 
     const result = await stageNativeUpdate({
       version: VERSION,
@@ -444,6 +455,7 @@ describe('stageNativeUpdate', () => {
     await expect(stat(join(stagingDir, 'kimi-9.9.9.part'))).rejects.toThrow();
     await expect(stat(join(stagingDir, 'staged.json.swap-1234'))).resolves.toBeDefined();
     await expect(stat(join(stagingDir, claimExe))).resolves.toBeDefined();
+    await expect(stat(join(stagingDir, youngExe))).resolves.toBeDefined();
   });
 
   it('retries short writes until each chunk is fully persisted', async () => {
@@ -468,8 +480,9 @@ describe('stageNativeUpdate', () => {
     await mkdir(join(stagingDir, 'some-other-tool'), { recursive: true });
     await writeFile(join(stagingDir, 'user-notes.txt'), 'not ours', 'utf-8');
     await writeFile(join(stagingDir, 'some-other-tool', 'cache.bin'), 'not ours either');
-    // A genuine updater-owned orphan to prove cleanup still works.
-    await writeFile(join(stagingDir, 'kimi-9.9.9'), Buffer.from('orphan-exe'));
+    // A genuine updater-owned orphan to prove cleanup still works (aged past
+    // the orphan grace period).
+    await agedOrphan(join(stagingDir, 'kimi-9.9.9'), Buffer.from('orphan-exe'));
 
     const result = await stageNativeUpdate({
       version: VERSION,
@@ -489,9 +502,9 @@ describe('stageNativeUpdate', () => {
     const stagingDir = getNativeStagingDir(exePath);
     const { mkdir } = await import('node:fs/promises');
     await mkdir(stagingDir, { recursive: true });
-    await writeFile(join(stagingDir, 'kimi-1.2.3-rc.1'), Buffer.from('orphan'));
-    await writeFile(join(stagingDir, 'kimi-1.2.3+build.5.exe'), Buffer.from('orphan'));
-    await writeFile(join(stagingDir, 'kimi-1.2.3-rc.1.123.0.part'), Buffer.from('partial'));
+    await agedOrphan(join(stagingDir, 'kimi-1.2.3-rc.1'), Buffer.from('orphan'));
+    await agedOrphan(join(stagingDir, 'kimi-1.2.3+build.5.exe'), Buffer.from('orphan'));
+    await agedOrphan(join(stagingDir, 'kimi-1.2.3-rc.1.123.0.part'), Buffer.from('partial'));
 
     const result = await stageNativeUpdate({
       version: VERSION,
