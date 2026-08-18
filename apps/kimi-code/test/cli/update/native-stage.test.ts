@@ -174,6 +174,20 @@ describe('stageNativeUpdate', () => {
     expect(info.mode & 0o111).not.toBe(0);
   });
 
+  it('records the manual marker when the stage answers an explicit upgrade', async () => {
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+      manual: true,
+    });
+    expect(result.staged.manual).toBe(true);
+    // And it round-trips through the on-disk metadata.
+    expect((await readStagedNativeUpdate(exePath))?.manual).toBe(true);
+  });
+
   it('makes the download executable before publishing it at the staged name', async () => {
     // A concurrent swap may move the staged exe into place the instant it
     // appears at its published name, so the chmod must land on the private

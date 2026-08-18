@@ -513,7 +513,7 @@ describe('runUpdatePreflight', () => {
       await expect(runUpdatePreflight('0.4.0', options)).resolves.toBe('exit');
       expect(mocks.spawn).toHaveBeenCalledWith(
         process.execPath,
-        ['__update_download', '0.5.0'],
+        ['__update_download', '0.5.0', '--manual'],
         expect.objectContaining({ stdio: 'inherit' }),
       );
       expect(stdout.join('')).toContain('Updated @moonshot-ai/kimi-code to 0.5.0');
@@ -536,7 +536,7 @@ describe('runUpdatePreflight', () => {
       await expect(runUpdatePreflight('0.4.0', options)).resolves.toBe('exit');
       expect(mocks.spawn).toHaveBeenCalledWith(
         process.execPath,
-        ['__update_download', '0.5.0'],
+        ['__update_download', '0.5.0', '--manual'],
         expect.objectContaining({ stdio: 'inherit' }),
       );
       expect(stdout.join('')).toContain('Updated @moonshot-ai/kimi-code to 0.5.0');

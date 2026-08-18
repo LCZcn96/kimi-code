@@ -173,6 +173,17 @@ describe('runUpdateDownloadCommand', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it('marks the stage as manual when the download answers an explicit upgrade', async () => {
+    mocks.tryAcquireUpdateInstallLock.mockResolvedValue({
+      filePath: '/tmp/install.lock',
+      release: vi.fn(async () => {}),
+    });
+    await expect(runUpdateDownloadCommand('0.7.0', true)).resolves.toBe(0);
+    expect(mocks.stageNativeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ version: '0.7.0', manual: true }),
+    );
+  });
+
   it('reports staging failures with a non-zero exit code', async () => {
     mocks.stageNativeUpdate.mockRejectedValue(new Error('sha256 mismatch'));
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

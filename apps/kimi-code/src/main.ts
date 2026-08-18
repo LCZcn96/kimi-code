@@ -267,8 +267,8 @@ function bootstrap(): void {
         process.exit(1);
       });
     },
-    (targetVersion) => {
-      void runUpdateDownloadCommand(targetVersion).then(
+    (targetVersion, manual) => {
+      void runUpdateDownloadCommand(targetVersion, manual).then(
         (code) => {
           process.exit(code);
         },

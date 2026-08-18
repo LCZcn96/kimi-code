@@ -39,6 +39,12 @@ const StagedNativeUpdateSchema = z
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     exeSize: z.number().int().min(1),
     stagedAt: z.string().min(1),
+    /**
+     * True when the stage was produced by an explicit user-initiated
+     * `kimi upgrade` (vs the passive background downloader): manual stages
+     * still apply when automatic updates are opted out via env.
+     */
+    manual: z.boolean().optional(),
   })
   .strict();
 
@@ -189,6 +195,8 @@ export interface StageNativeUpdateOptions {
   readonly onProgress?: (downloadedBytes: number, totalBytes: number | null) => void;
   /** Test hook: override the download idle timeout (default 30 s). */
   readonly idleTimeoutMs?: number;
+  /** True when the stage answers an explicit user-initiated `kimi upgrade`. */
+  readonly manual?: boolean;
 }
 
 export type StageNativeUpdateStatus = 'already-staged' | 'staged';
@@ -318,6 +326,7 @@ export async function stageNativeUpdate(
     sha256: '',
     exeSize: 0,
     stagedAt: new Date().toISOString(),
+    manual: options.manual === true ? true : undefined,
   };
 
   // Unique .part name per worker: a same-version downloader may overlap a

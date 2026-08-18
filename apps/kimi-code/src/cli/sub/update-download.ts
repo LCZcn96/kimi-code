@@ -49,7 +49,10 @@ async function waitForStagedUpdate(
   }
 }
 
-export async function runUpdateDownloadCommand(version: string): Promise<number> {
+export async function runUpdateDownloadCommand(
+  version: string,
+  manual: boolean = false,
+): Promise<number> {
   if (!detectNativeInstall()) {
     process.stderr.write('error: update download is only available in the native build\n');
     return 1;
@@ -91,6 +94,7 @@ export async function runUpdateDownloadCommand(version: string): Promise<number>
       version,
       exePath: process.execPath,
       onProgress,
+      manual,
     });
     if (out.isTTY) out.write('\n');
     if (result.status === 'already-staged') {

@@ -114,7 +114,11 @@ function createSpawnMock(routes: {
   return { calls, spawnImpl };
 }
 
-async function seedStagedUpdate(exePath: string, version: string): Promise<void> {
+async function seedStagedUpdate(
+  exePath: string,
+  version: string,
+  options?: { readonly manual?: boolean },
+): Promise<void> {
   const stagingDir = getNativeStagingDir(exePath);
   await mkdir(stagingDir, { recursive: true });
   const exeBytes = Buffer.alloc(STAGED_EXE_SIZE, 1);
@@ -130,6 +134,7 @@ async function seedStagedUpdate(exePath: string, version: string): Promise<void>
       sha256: createHash('sha256').update(exeBytes).digest('hex'),
       exeSize: STAGED_EXE_SIZE,
       stagedAt: new Date().toISOString(),
+      manual: options?.manual === true ? true : undefined,
     }, null, 2)}\n`,
     'utf-8',
   );
@@ -528,6 +533,24 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     // running exe is untouched.
     await expect(stat(getNativeStagedStateFile(exePath))).resolves.toBeDefined();
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
+  });
+
+  it('applies a manually staged update even when automatic updates are disabled by env', async () => {
+    // The opt-out targets automatic updates; an explicit `kimi upgrade`
+    // stages with manual: true and must still apply.
+    await seedStagedUpdate(exePath, STAGED_VERSION, { manual: true });
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(
+      makeDeps(exePath, {
+        spawnImpl,
+        env: { PATH: '/usr/bin', KIMI_CODE_NO_AUTO_UPDATE: '1' },
+      }),
+    );
+
+    expect(relaunched).toBe(true);
+    expect(calls).toHaveLength(2); // smoke check + re-exec
+    const newExe = await readFile(exePath);
+    expect(newExe.equals(Buffer.alloc(STAGED_EXE_SIZE, 1))).toBe(true);
   });
 
   it('stamps the claim with a fresh mtime so a concurrent launch does not misread it as stale', async () => {

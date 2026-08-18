@@ -15,7 +15,7 @@ export type MainCommandHandler = (opts: CLIOptions) => void;
 export type MigrateCommandHandler = () => void;
 export type PluginNodeRunnerHandler = (entry: string, args: readonly string[]) => void;
 export type UpgradeCommandHandler = () => void | Promise<void>;
-export type UpdateDownloadHandler = (version: string) => void;
+export type UpdateDownloadHandler = (version: string, manual: boolean) => void;
 
 export function createProgram(
   version: string,
@@ -141,12 +141,14 @@ export function createProgram(
     });
 
   // Self-spawned worker for native staged updates (detached background
-  // download, or foreground from `kimi upgrade`). Hidden: not user-facing.
+  // download, or foreground from `kimi upgrade` — `--manual` marks the
+  // latter's stage as user-requested). Hidden: not user-facing.
   program
     .command('__update_download', { hidden: true })
     .argument('<version>')
-    .action((targetVersion: string) => {
-      onUpdateDownload(targetVersion);
+    .option('--manual', 'the stage answers an explicit user-initiated upgrade')
+    .action((targetVersion: string, options: { manual?: boolean }) => {
+      onUpdateDownload(targetVersion, options.manual === true);
     });
 
   program.argument('[args...]').action((args: string[]) => {

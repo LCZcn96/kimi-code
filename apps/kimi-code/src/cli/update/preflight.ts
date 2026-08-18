@@ -171,10 +171,13 @@ function resolveInstallSpawn(
   source: InstallSource,
   version: string,
   platform: NodeJS.Platform,
+  options?: { readonly manual?: boolean },
 ): { readonly resolvedCmd: string; readonly args: readonly string[]; readonly shell: boolean } | undefined {
   const { cmd, args } = spawnForSource(source, version, platform);
   if (source === 'native') {
-    return { resolvedCmd: cmd, args, shell: false };
+    // A user-confirmed install marks the stage as manual so the startup swap
+    // applies it even when automatic updates are opted out via env.
+    return { resolvedCmd: cmd, args: options?.manual === true ? [...args, '--manual'] : args, shell: false };
   }
   const resolvedCmd = resolveSpawnCommand(cmd, platform);
   if (resolvedCmd === undefined) return undefined;
@@ -570,7 +573,9 @@ export async function installUpdate(
   version: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
-  const spawnTarget = resolveInstallSpawn(source, version, platform);
+  // installUpdate only runs after an explicit user choice (the `upgrade`
+  // command or the interactive prompt) — mark the stage as manual.
+  const spawnTarget = resolveInstallSpawn(source, version, platform, { manual: true });
   if (spawnTarget === undefined) {
     throw new Error(
       `${spawnForSource(source, version, platform).cmd} was not found in PATH; cannot install the update`,
