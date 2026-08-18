@@ -54,7 +54,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { trimTrailingOpenToolExchange } from '#/session/subagent/internal/forkSeed';
+import { closeTrailingOpenToolExchange } from '#/agent/contextMemory/openToolExchange';
 import {
   buildSubagentModelDescriptions,
   exposesSubagentModelChoice,
@@ -305,7 +305,7 @@ export class SubagentTool implements ISubagentTool {
         );
       }
       const profile = this.catalog.get(requestedProfileName);
-      if (profile === undefined) {
+      if (!fork && profile === undefined) {
         throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${requestedProfileName}"`, {
           details: { profileName: requestedProfileName },
         });
@@ -327,13 +327,17 @@ export class SubagentTool implements ISubagentTool {
       try {
         this.modelCatalog.get(binding.model);
         created = await this.lifecycle.create({
-          binding: {
-            profile: profile.name,
-            model: binding.model,
-            thinking: binding.thinking,
-          },
+          binding:
+            !fork && profile !== undefined
+              ? {
+                  profile: profile.name,
+                  model: binding.model,
+                  thinking: binding.thinking,
+                }
+              : undefined,
           labels: subagentLabels(this.callerAgentId),
           runtimeId: runtime.identity.runtimeId,
+          forkedFrom: fork ? this.callerAgentId : undefined,
         });
       } catch (error) {
         throw wrapSubagentModelError(error, binding.model, own.modelAlias);
@@ -344,7 +348,7 @@ export class SubagentTool implements ISubagentTool {
         .inheritUserTools(requester.accessor.get(IAgentUserToolService));
       if (fork) {
         created.accessor.get(IAgentProfileService).applyBindingSnapshot(own);
-        const seed = trimTrailingOpenToolExchange(
+        const seed = closeTrailingOpenToolExchange(
           requester.accessor.get(IAgentContextMemoryService).get(),
         );
         if (seed.length > 0) {
@@ -352,12 +356,12 @@ export class SubagentTool implements ISubagentTool {
         }
       }
       agentId = created.id;
-      profileName = profile.name;
+      profileName = profile?.name ?? requestedProfileName;
       displayModel = binding.model;
       if (fork) {
         promptText = `${FORK_CONTEXT_NOTICE}\n\n${args.prompt}`;
       } else {
-        promptText = await applyProfilePromptPrefix(profile, args.prompt, {
+        promptText = await applyProfilePromptPrefix(profile!, args.prompt, {
           cwd: this.workspace.workDir,
           process: runtime.process!,
           log: this.log,

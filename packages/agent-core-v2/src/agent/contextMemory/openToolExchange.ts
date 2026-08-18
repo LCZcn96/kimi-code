@@ -1,0 +1,44 @@
+import { createToolMessage } from '#/kosong/contract/message';
+
+import type { ContextMessage } from './types';
+
+export const INHERITED_IN_FLIGHT_TOOL_OUTPUT =
+  'This tool call was still executing when this conversation snapshot was inherited from the source agent, so its result is not part of this context. The outcome is unknown — do not assume it succeeded or failed, and do not wait for it.';
+
+/**
+ * Closes a trailing open tool exchange in a history about to seed another
+ * agent's context memory. The source's in-flight tool calls can never receive
+ * their real results in the inheriting agent, so each unclosed call is
+ * answered with a synthetic {@link INHERITED_IN_FLIGHT_TOOL_OUTPUT} tool
+ * message rather than trimmed away — the seeded conversation stays
+ * well-formed and the source's final step remains visible as reference.
+ */
+export function closeTrailingOpenToolExchange(
+  history: readonly ContextMessage[],
+): ContextMessage[] {
+  let lastNonToolIndex = history.length - 1;
+  while (lastNonToolIndex >= 0 && history[lastNonToolIndex]?.role === 'tool') {
+    lastNonToolIndex -= 1;
+  }
+
+  const assistant = history[lastNonToolIndex];
+  if (assistant === undefined) return [];
+  if (assistant.role !== 'assistant' || assistant.toolCalls.length === 0) return [...history];
+
+  const answeredToolCallIds = new Set(
+    history
+      .slice(lastNonToolIndex + 1)
+      .map((message) => message.toolCallId)
+      .filter((toolCallId): toolCallId is string => typeof toolCallId === 'string'),
+  );
+  const openCalls = assistant.toolCalls.filter(
+    (toolCall) => !answeredToolCallIds.has(toolCall.id),
+  );
+  if (openCalls.length === 0) return [...history];
+  return [
+    ...history,
+    ...openCalls.map((toolCall) =>
+      createToolMessage(toolCall.id, INHERITED_IN_FLIGHT_TOOL_OUTPUT),
+    ),
+  ];
+}

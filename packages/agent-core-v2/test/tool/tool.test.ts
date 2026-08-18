@@ -39,6 +39,7 @@ import {
   type SubagentToolInput,
 } from '#/agent/tools/agent/agent';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { INHERITED_IN_FLIGHT_TOOL_OUTPUT } from '#/agent/contextMemory/openToolExchange';
 import { DEFAULT_SUBAGENT_TIMEOUT_MS, SECONDARY_MODEL_SECTION, SUBAGENT_SECTION } from '#/session/subagent/configSection';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
 import { Error2, ErrorCodes } from '#/errors';
@@ -1281,7 +1282,7 @@ describe('Agent tool execution contract', () => {
     expect(lifecycle.run).not.toHaveBeenCalled();
   });
 
-  it('seeds a forked subagent with the caller closed history prefix', async () => {
+  it('seeds a forked subagent with the caller history, closing the in-flight exchange', async () => {
     const closedCall: ToolCall = {
       type: 'function',
       id: 'call_read',
@@ -1363,15 +1364,20 @@ describe('Agent tool execution contract', () => {
 
     expect(result.output).toContain('child result');
     expect(childAppend).toHaveBeenCalledTimes(1);
-    expect(childAppend).toHaveBeenCalledWith(...parentHistory.slice(0, 3));
+    expect(childAppend).toHaveBeenCalledWith(
+      ...parentHistory,
+      expect.objectContaining({
+        role: 'tool',
+        toolCallId: 'call_agent',
+        content: [{ type: 'text', text: INHERITED_IN_FLIGHT_TOOL_OUTPUT }],
+      }),
+    );
     expect(childApplySnapshot).toHaveBeenCalledTimes(1);
     expect(childApplySnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ profileName: 'coder', modelAlias: 'mock-model' }),
     );
     expect(lifecycle.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        binding: expect.objectContaining({ profile: 'coder', model: 'mock-model' }),
-      }),
+      expect.objectContaining({ binding: undefined, forkedFrom: 'main' }),
     );
     expect(lifecycle.run).toHaveBeenCalledWith(
       'agent-child',
@@ -1420,6 +1426,27 @@ describe('Agent tool execution contract', () => {
 
     expect(result.output).toContain('child result');
     expect(childAppend).not.toHaveBeenCalled();
+  });
+
+  it('forks without requiring the caller profile in the catalog', async () => {
+    const lifecycle = createAgentLifecycleStub({
+      createAgentIds: ['agent-child'],
+      runCompletion: async () => ({ summary: 'child result' }),
+    });
+    const context = createAgentToolContext(lifecycle);
+    context.get(IAgentProfileService).update({ profileName: 'withdrawn-profile' });
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Continue the analysis',
+      description: 'Fork context',
+      fork: true,
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('child result');
+    expect(lifecycle.create).toHaveBeenCalledWith(
+      expect.objectContaining({ binding: undefined, forkedFrom: 'main' }),
+    );
   });
 
   it('spawns a foreground subagent and returns its summary', async () => {
