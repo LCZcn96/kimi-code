@@ -24,9 +24,15 @@ import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import '#/agent/contextMemory/contextMemoryService';
+import { INHERITED_IN_FLIGHT_TOOL_OUTPUT } from '#/agent/contextMemory/openToolExchange';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import '#/agent/tokenCounting/tokenCountingService';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import type { ToolCall } from '#/kosong/contract/message';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { IHostClock } from '#/os/interface/hostClock';
 import { ISessionStateService } from '#/session/state/sessionState';
@@ -939,6 +945,73 @@ describe('AgentLifecycleService', () => {
     expect(childRuntime.current.runtimeId).toBe('remote');
     childRuntime.switch('local');
     expect(sourceRuntime.current.runtimeId).toBe('local');
+  });
+
+  it('fork seeds the child context, closing the trailing open tool exchange', async () => {
+    const logs = new Map<string, WireRecord[]>();
+    ix.stub(IAppendLogStore, {
+      _serviceBrand: undefined,
+      append: (scope: string, key: string, record: WireRecord) => {
+        const id = `${scope}/${key}`;
+        logs.set(id, [...(logs.get(id) ?? []), record]);
+      },
+      read: async function* (scope: string, key: string) {
+        for (const record of logs.get(`${scope}/${key}`) ?? []) yield record;
+      },
+      rewrite: (scope: string, key: string, next: readonly WireRecord[]) => {
+        logs.set(`${scope}/${key}`, [...next]);
+        return Promise.resolve();
+      },
+      flush: () => Promise.resolve(),
+      close: () => Promise.resolve(),
+      acquire: () => ({ dispose: () => {} }),
+    } as unknown as IAppendLogStore);
+    const svc = ix.get(IAgentLifecycleService);
+    const source = await svc.create({ agentId: 'main' });
+    const agentCall: ToolCall = {
+      type: 'function',
+      id: 'call_agent',
+      name: 'Agent',
+      arguments: '{}',
+    };
+    const history: ContextMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'analyze this repo' }], toolCalls: [] },
+      { role: 'assistant', content: [], toolCalls: [agentCall] },
+    ];
+    source.accessor.get(IAgentContextMemoryService).append(...history);
+
+    const child = await svc.fork('main', { agentId: 'forked' });
+
+    const seeded = child.accessor.get(IAgentContextMemoryService).get();
+    expect(seeded).toHaveLength(3);
+    expect(seeded[0]).toMatchObject({ role: 'user' });
+    expect(seeded[1]).toMatchObject({ role: 'assistant' });
+    expect(seeded[2]).toMatchObject({
+      role: 'tool',
+      toolCallId: 'call_agent',
+      content: [{ type: 'text', text: INHERITED_IN_FLIGHT_TOOL_OUTPUT }],
+    });
+  });
+
+  it('fork leaves the child context empty when the source history is empty', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'main' });
+
+    const child = await svc.fork('main', { agentId: 'forked' });
+
+    expect(child.accessor.get(IAgentContextMemoryService).get()).toEqual([]);
+  });
+
+  it('fork passes labels through to the registered agent metadata', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'main' });
+
+    await svc.fork('main', { agentId: 'forked', labels: { parentAgentId: 'main' } });
+
+    expect(registerAgent).toHaveBeenCalledWith(
+      'forked',
+      expect.objectContaining({ forkedFrom: 'main', labels: { parentAgentId: 'main' } }),
+    );
   });
 
   it('run throws when the agent does not exist', () => {

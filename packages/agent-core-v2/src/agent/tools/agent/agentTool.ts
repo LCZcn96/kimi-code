@@ -21,7 +21,6 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import {
   ToolAccesses,
@@ -54,7 +53,6 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { closeTrailingOpenToolExchange } from '#/agent/contextMemory/openToolExchange';
 import {
   buildSubagentModelDescriptions,
   exposesSubagentModelChoice,
@@ -326,19 +324,21 @@ export class SubagentTool implements ISubagentTool {
       let created: IAgentScopeHandle;
       try {
         this.modelCatalog.get(binding.model);
-        created = await this.lifecycle.create({
-          binding:
-            !fork && profile !== undefined
-              ? {
-                  profile: profile.name,
-                  model: binding.model,
-                  thinking: binding.thinking,
-                }
-              : undefined,
-          labels: subagentLabels(this.callerAgentId),
-          runtimeId: runtime.identity.runtimeId,
-          forkedFrom: fork ? this.callerAgentId : undefined,
-        });
+        if (fork) {
+          created = await this.lifecycle.fork(this.callerAgentId, {
+            labels: subagentLabels(this.callerAgentId),
+          });
+        } else {
+          created = await this.lifecycle.create({
+            binding: {
+              profile: profile!.name,
+              model: binding.model,
+              thinking: binding.thinking,
+            },
+            labels: subagentLabels(this.callerAgentId),
+            runtimeId: runtime.identity.runtimeId,
+          });
+        }
       } catch (error) {
         throw wrapSubagentModelError(error, binding.model, own.modelAlias);
       }
@@ -346,15 +346,6 @@ export class SubagentTool implements ISubagentTool {
       created.accessor
         .get(IAgentUserToolService)
         .inheritUserTools(requester.accessor.get(IAgentUserToolService));
-      if (fork) {
-        created.accessor.get(IAgentProfileService).applyBindingSnapshot(own);
-        const seed = closeTrailingOpenToolExchange(
-          requester.accessor.get(IAgentContextMemoryService).get(),
-        );
-        if (seed.length > 0) {
-          created.accessor.get(IAgentContextMemoryService).append(...seed);
-        }
-      }
       agentId = created.id;
       profileName = profile?.name ?? requestedProfileName;
       displayModel = binding.model;

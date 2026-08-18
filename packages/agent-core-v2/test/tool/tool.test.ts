@@ -38,8 +38,6 @@ import {
   SubagentToolInputSchema,
   type SubagentToolInput,
 } from '#/agent/tools/agent/agent';
-import type { ContextMessage } from '#/agent/contextMemory/types';
-import { INHERITED_IN_FLIGHT_TOOL_OUTPUT } from '#/agent/contextMemory/openToolExchange';
 import { DEFAULT_SUBAGENT_TIMEOUT_MS, SECONDARY_MODEL_SECTION, SUBAGENT_SECTION } from '#/session/subagent/configSection';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
 import { Error2, ErrorCodes } from '#/errors';
@@ -212,6 +210,7 @@ interface AgentLifecycleStubOptions {
 
 interface AgentLifecycleStub extends IAgentLifecycleService, ISessionSubagentService {
   readonly create: ReturnType<typeof vi.fn<IAgentLifecycleService['create']>>;
+  readonly fork: ReturnType<typeof vi.fn<IAgentLifecycleService['fork']>>;
   readonly run: ReturnType<typeof vi.fn<ISessionSubagentService['run']>>;
   readonly get: ReturnType<typeof vi.fn<IAgentLifecycleService['get']>>;
   readonly publishedEvents: Event2[];
@@ -259,7 +258,6 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
             republishStatus: () => {},
             getEffectiveThinkingLevel: () => 'off',
             isToolActive: () => false,
-            applyBindingSnapshot: () => {},
           } as never;
         }
         if (serviceId === IAgentLoopService) {
@@ -362,8 +360,17 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       return createdHandle;
     }),
     notifyAgentTaskStopped: vi.fn(),
-    fork: vi.fn(async () => {
-      throw new Error('unexpected fork');
+    fork: vi.fn(async (sourceAgentId: string, input = {}) => {
+      if (options.createError !== undefined) throw options.createError;
+      const agentId =
+        input.agentId ??
+        options.createAgentIds?.[created] ??
+        `agent-child-${String(created + 1)}`;
+      created += 1;
+      profileByAgentId.set(agentId, profileByAgentId.get(sourceAgentId) ?? 'coder');
+      const createdHandle = handle(agentId);
+      handles.set(agentId, createdHandle);
+      return createdHandle;
     }),
     run: vi.fn(async (agentId, request, runOptions): Promise<AgentRunHandle> => {
       const completion =
@@ -1282,76 +1289,10 @@ describe('Agent tool execution contract', () => {
     expect(lifecycle.run).not.toHaveBeenCalled();
   });
 
-  it('seeds a forked subagent with the caller history, closing the in-flight exchange', async () => {
-    const closedCall: ToolCall = {
-      type: 'function',
-      id: 'call_read',
-      name: 'Read',
-      arguments: '{}',
-    };
-    const openCall: ToolCall = {
-      type: 'function',
-      id: 'call_agent',
-      name: 'Agent',
-      arguments: '{}',
-    };
-    const parentHistory: ContextMessage[] = [
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'analyze this repo' }],
-        toolCalls: [],
-      },
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'reading the entry point' }],
-        toolCalls: [closedCall],
-      },
-      {
-        role: 'tool',
-        toolCallId: 'call_read',
-        content: [{ type: 'text', text: 'file contents' }],
-        toolCalls: [],
-      },
-      { role: 'assistant', content: [], toolCalls: [openCall] },
-    ];
-    const childAppend = vi.fn();
-    const childApplySnapshot = vi.fn();
-    const handleServices = new Map([
-      [
-        'main',
-        new Map<unknown, unknown>([
-          [
-            IAgentContextMemoryService,
-            { _serviceBrand: undefined, get: () => parentHistory },
-          ],
-        ]),
-      ],
-      [
-        'agent-child',
-        new Map<unknown, unknown>([
-          [
-            IAgentContextMemoryService,
-            { _serviceBrand: undefined, get: () => [], append: childAppend },
-          ],
-          [
-            IAgentProfileService,
-            {
-              _serviceBrand: undefined,
-              data: () => ({ profileName: 'coder' }),
-              update: () => {},
-              republishStatus: () => {},
-              getEffectiveThinkingLevel: () => 'off',
-              isToolActive: () => false,
-              applyBindingSnapshot: childApplySnapshot,
-            },
-          ],
-        ]),
-      ],
-    ]);
+  it('launches a fork through the agent lifecycle with subagent labels', async () => {
     const lifecycle = createAgentLifecycleStub({
       createAgentIds: ['agent-child'],
       runCompletion: async () => ({ summary: 'child result' }),
-      handleServices,
     });
     const context = createAgentToolContext(lifecycle);
     context.get(IAgentProfileService).update({ profileName: 'coder' });
@@ -1363,22 +1304,10 @@ describe('Agent tool execution contract', () => {
     });
 
     expect(result.output).toContain('child result');
-    expect(childAppend).toHaveBeenCalledTimes(1);
-    expect(childAppend).toHaveBeenCalledWith(
-      ...parentHistory,
-      expect.objectContaining({
-        role: 'tool',
-        toolCallId: 'call_agent',
-        content: [{ type: 'text', text: INHERITED_IN_FLIGHT_TOOL_OUTPUT }],
-      }),
-    );
-    expect(childApplySnapshot).toHaveBeenCalledTimes(1);
-    expect(childApplySnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ profileName: 'coder', modelAlias: 'mock-model' }),
-    );
-    expect(lifecycle.create).toHaveBeenCalledWith(
-      expect.objectContaining({ binding: undefined, forkedFrom: 'main' }),
-    );
+    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.fork).toHaveBeenCalledWith('main', {
+      labels: expect.objectContaining({ parentAgentId: 'main' }),
+    });
     expect(lifecycle.run).toHaveBeenCalledWith(
       'agent-child',
       {
@@ -1397,37 +1326,6 @@ describe('Agent tool execution contract', () => {
     );
   });
 
-  it('does not seed a forked subagent when the caller history is empty', async () => {
-    const childAppend = vi.fn();
-    const handleServices = new Map([
-      [
-        'agent-child',
-        new Map<unknown, unknown>([
-          [
-            IAgentContextMemoryService,
-            { _serviceBrand: undefined, get: () => [], append: childAppend },
-          ],
-        ]),
-      ],
-    ]);
-    const lifecycle = createAgentLifecycleStub({
-      createAgentIds: ['agent-child'],
-      runCompletion: async () => ({ summary: 'child result' }),
-      handleServices,
-    });
-    const context = createAgentToolContext(lifecycle);
-    context.get(IAgentProfileService).update({ profileName: 'coder' });
-
-    const result = await executeAgentTool(context, {
-      prompt: 'Continue the analysis',
-      description: 'Fork context',
-      fork: true,
-    });
-
-    expect(result.output).toContain('child result');
-    expect(childAppend).not.toHaveBeenCalled();
-  });
-
   it('forks without requiring the caller profile in the catalog', async () => {
     const lifecycle = createAgentLifecycleStub({
       createAgentIds: ['agent-child'],
@@ -1444,9 +1342,10 @@ describe('Agent tool execution contract', () => {
 
     expect(result.isError).not.toBe(true);
     expect(result.output).toContain('child result');
-    expect(lifecycle.create).toHaveBeenCalledWith(
-      expect.objectContaining({ binding: undefined, forkedFrom: 'main' }),
-    );
+    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.fork).toHaveBeenCalledWith('main', {
+      labels: expect.objectContaining({ parentAgentId: 'main' }),
+    });
   });
 
   it('spawns a foreground subagent and returns its summary', async () => {

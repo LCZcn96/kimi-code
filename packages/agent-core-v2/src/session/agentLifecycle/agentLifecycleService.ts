@@ -212,6 +212,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       agentId: opts?.agentId,
       runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,
       forkedFrom: source.id,
+      labels: opts?.labels,
     });
 
     const sourceData = source.accessor.get(IAgentProfileService).data();
