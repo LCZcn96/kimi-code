@@ -9,7 +9,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, unlink } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { z } from 'zod';
@@ -96,6 +96,15 @@ export async function removeStagedNativeUpdate(
 }
 
 /**
+ * Entries the updater itself owns inside `.staging/`: staged executables
+ * (`kimi-<version>[.exe]`) and download intermediates
+ * (`kimi-<version>[.exe][.<pid>.<n>].part`). Cleanup must positively match
+ * this pattern — anything else in the directory belongs to the user or
+ * another tool and is left alone.
+ */
+const UPDATER_OWNED_STAGING_FILE = /^kimi-\d+\.\d+\.\d+(\.exe)?((\.\d+\.\d+)?\.part)?$/;
+
+/**
  * Remove files in `.staging/` that nothing references: interrupted downloads
  * (`.part`), and staged exes whose `staged.json` never landed (downloader
  * killed between the two writes) — each such orphan is ~180 MB and would
@@ -128,7 +137,11 @@ async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
   }
   for (const entry of entries) {
     if (keep.has(entry)) continue;
-    await rm(join(stagingDir, entry), { force: true, recursive: true }).catch(() => {});
+    // Only ever unlink updater-owned artifact names (files, never
+    // directories): the staging dir sits next to the exe and may contain
+    // data that is not ours.
+    if (!UPDATER_OWNED_STAGING_FILE.test(entry)) continue;
+    await unlink(join(stagingDir, entry)).catch(() => {});
   }
 }
 
@@ -201,7 +214,19 @@ async function downloadAndHash(
       armIdleTimeout();
       hash.update(chunk);
       size += chunk.length;
-      await file.write(chunk);
+      // FileHandle.write may persist FEWER bytes than requested (a short
+      // write, e.g. near disk exhaustion) while the hash and size above
+      // already account for the whole chunk — an unretried short write would
+      // publish a truncated binary under a valid checksum. Loop until the
+      // chunk is fully on disk.
+      let offset = 0;
+      while (offset < chunk.length) {
+        const { bytesWritten } = await file.write(chunk, offset);
+        if (bytesWritten === 0) {
+          throw new Error('failed to write the native binary to disk (disk full?)');
+        }
+        offset += bytesWritten;
+      }
       onProgress?.(size, total);
     }
   } finally {

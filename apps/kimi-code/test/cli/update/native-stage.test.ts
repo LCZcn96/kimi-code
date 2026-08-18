@@ -17,6 +17,8 @@ import { getNativeStagedStateFile, getNativeStagingDir } from '#/utils/paths';
 const fsMocks = vi.hoisted(() => ({
   /** Records chmod/rename calls (path-based) so tests can assert ordering. */
   calls: [] as Array<{ readonly op: 'chmod' | 'rename'; readonly path: string; readonly dst?: string }>,
+  /** When > 0, the next open() wraps its handle so the first write is short. */
+  shortWriteBudget: 0,
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -36,6 +38,34 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     ) => {
       fsMocks.calls.push({ op: 'rename', path: String(src), dst: String(dst) });
       return actual.rename(src, dst);
+    },
+    open: async (
+      path: Parameters<typeof actual.open>[0],
+      flags: Parameters<typeof actual.open>[1],
+      mode: Parameters<typeof actual.open>[2],
+    ) => {
+      const handle = await actual.open(path, flags, mode);
+      if (fsMocks.shortWriteBudget <= 0) return handle;
+      fsMocks.shortWriteBudget -= 1;
+      let truncated = false;
+      return {
+        // FileHandle methods live on the prototype, so delegate explicitly.
+        write: async (
+          buffer: Buffer,
+          offset?: number | null,
+          length?: number | null,
+          position?: number | null,
+        ) => {
+          const off = offset ?? 0;
+          const len = length ?? buffer.length - off;
+          // The first write persists only half the requested bytes.
+          const effectiveLen = !truncated && len > 1 ? Math.floor(len / 2) : len;
+          truncated = true;
+          const result = await handle.write(buffer, off, effectiveLen, position ?? null);
+          return { bytesWritten: result.bytesWritten, buffer: result.buffer };
+        },
+        close: () => handle.close(),
+      };
     },
   };
 });
@@ -96,6 +126,7 @@ describe('stageNativeUpdate', () => {
     workDir = await mkdtemp(join(tmpdir(), 'kimi-stage-test-'));
     exePath = join(workDir, 'bin', 'kimi');
     fsMocks.calls.length = 0;
+    fsMocks.shortWriteBudget = 0;
   });
 
   afterEach(async () => {
@@ -358,6 +389,45 @@ describe('stageNativeUpdate', () => {
     await expect(stat(join(stagingDir, 'kimi-9.9.9.part'))).rejects.toThrow();
     await expect(stat(join(stagingDir, 'staged.json.swap-1234'))).resolves.toBeDefined();
     await expect(stat(join(stagingDir, claimExe))).resolves.toBeDefined();
+  });
+
+  it('retries short writes until each chunk is fully persisted', async () => {
+    // The first write to the .part file persists only half its bytes; the
+    // write loop must make up the remainder or the staged exe is truncated.
+    fsMocks.shortWriteBudget = 1;
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    expect(result.status).toBe('staged');
+    const exeBytes = await readFile(stagedExePath(exePath, result.staged));
+    expect(exeBytes.equals(PAYLOAD)).toBe(true);
+  });
+
+  it('leaves foreign files in the staging directory alone', async () => {
+    const stagingDir = getNativeStagingDir(exePath);
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(join(stagingDir, 'some-other-tool'), { recursive: true });
+    await writeFile(join(stagingDir, 'user-notes.txt'), 'not ours', 'utf-8');
+    await writeFile(join(stagingDir, 'some-other-tool', 'cache.bin'), 'not ours either');
+    // A genuine updater-owned orphan to prove cleanup still works.
+    await writeFile(join(stagingDir, 'kimi-9.9.9'), Buffer.from('orphan-exe'));
+
+    const result = await stageNativeUpdate({
+      version: VERSION,
+      exePath,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl: mockCdnFetch({ payload: PAYLOAD }),
+    });
+    expect(result.status).toBe('staged');
+
+    await expect(stat(join(stagingDir, 'kimi-9.9.9'))).rejects.toThrow();
+    await expect(stat(join(stagingDir, 'user-notes.txt'))).resolves.toBeDefined();
+    await expect(stat(join(stagingDir, 'some-other-tool', 'cache.bin'))).resolves.toBeDefined();
   });
 });
 
