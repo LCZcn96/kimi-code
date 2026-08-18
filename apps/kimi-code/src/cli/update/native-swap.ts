@@ -17,7 +17,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { link, readdir, readFile, rename, rmdir, stat, unlink, utimes } from 'node:fs/promises';
+import { link, readdir, rename, rmdir, stat, unlink, utimes } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -267,9 +267,12 @@ async function cleanupBackups(exePath: string, keepPath?: string): Promise<void>
 
 /**
  * Prune `staged.json.swap-<pid>` claim files left by instances that died
- * mid-swap, together with the staged exe they reference (re-downloaded on the
- * next update cycle if still wanted). Returns true when a FRESH claim file
- * was seen — i.e. another instance is swapping right now.
+ * mid-swap. Only the claim files themselves are removed: their referenced
+ * exes may belong to a freshly published stage (a downloader can republish
+ * the same version while we sweep, and the metadata snapshot is stale the
+ * moment it is read), and genuinely unreferenced exes are reaped by the
+ * downloader's own orphan cleanup before its next stage. Returns true when a
+ * FRESH claim file was seen — i.e. another instance is swapping right now.
  */
 async function cleanupStaleSwapClaims(exePath: string): Promise<boolean> {
   const stagingDir = getNativeStagingDir(exePath);
@@ -279,12 +282,6 @@ async function cleanupStaleSwapClaims(exePath: string): Promise<boolean> {
   } catch {
     return false;
   }
-  // A stale claim's referenced exe may have been REPLACED by a fresh staged
-  // download of the same version — downloaders deliberately coexist with
-  // claims, and the exe name is version-derived, so the names collide. The
-  // file the CURRENT staged metadata references belongs to that fresh stage,
-  // not to the crashed swap: preserve it.
-  const currentStaged = await readStagedNativeUpdate(exePath).catch(() => null);
   let swapInProgress = false;
   for (const entry of entries) {
     if (!entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)) continue;
@@ -294,22 +291,6 @@ async function cleanupStaleSwapClaims(exePath: string): Promise<boolean> {
     if (Date.now() - info.mtimeMs < SWAP_CLAIM_STALE_MS) {
       swapInProgress = true;
       continue;
-    }
-    const raw = await readFile(full, 'utf-8').catch(() => null);
-    if (raw !== null) {
-      try {
-        const exeFileName: unknown = (JSON.parse(raw) as { exeFileName?: unknown }).exeFileName;
-        if (typeof exeFileName === 'string' && exeFileName.length > 0) {
-          // basename(): the metadata contract is a plain file name — never
-          // let a hand-crafted path escape the staging dir.
-          const referenced = basename(exeFileName);
-          if (referenced !== currentStaged?.exeFileName) {
-            await unlink(join(stagingDir, referenced)).catch(() => {});
-          }
-        }
-      } catch {
-        // Unparseable claim file — remove it anyway.
-      }
     }
     await unlink(full).catch(() => {});
   }

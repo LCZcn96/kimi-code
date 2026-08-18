@@ -410,7 +410,7 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });
 
-  it('cleans up stale swap claims and their orphaned staged exe', async () => {
+  it('cleans up stale swap claims without touching staged exes', async () => {
     const stagingDir = getNativeStagingDir(exePath);
     await mkdir(stagingDir, { recursive: true });
     const exeFileName = stagedExeFileName(STAGED_VERSION, 'linux');
@@ -439,7 +439,10 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(relaunched).toBe(false);
     expect(calls).toHaveLength(0);
     await expect(stat(claimPath)).rejects.toThrow();
-    await expect(stat(orphanedExe)).rejects.toThrow();
+    // The exe the claim referenced is left in place: it may belong to a
+    // freshly republished stage, and the downloader's orphan cleanup reaps
+    // it if nothing references it.
+    await expect(stat(orphanedExe)).resolves.toBeDefined();
   });
 
   it('keeps recovery artifacts when both the swap-in rename and the rollback fail', async () => {
