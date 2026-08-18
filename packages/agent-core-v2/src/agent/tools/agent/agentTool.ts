@@ -207,7 +207,10 @@ export class SubagentTool implements ISubagentTool {
     const profileNameForDisplay =
       resumeAgentId !== undefined && resumeAgentId.length > 0
         ? this.resumeProfileName(resumeAgentId) ?? RESUMED_LABEL
-        : requestedProfileName ?? DEFAULT_PROFILE_NAME;
+        : (requestedProfileName ??
+            (args.fork === true
+              ? (this.profile.data().profileName ?? DEFAULT_PROFILE_NAME)
+              : DEFAULT_PROFILE_NAME));
     const prefix = args.run_in_background === true ? 'Launching background' : 'Launching';
     return {
       description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
@@ -340,6 +343,7 @@ export class SubagentTool implements ISubagentTool {
         .get(IAgentUserToolService)
         .inheritUserTools(requester.accessor.get(IAgentUserToolService));
       if (fork) {
+        created.accessor.get(IAgentProfileService).applyBindingSnapshot(own);
         const seed = trimTrailingOpenToolExchange(
           requester.accessor.get(IAgentContextMemoryService).get(),
         );
@@ -350,13 +354,14 @@ export class SubagentTool implements ISubagentTool {
       agentId = created.id;
       profileName = profile.name;
       displayModel = binding.model;
-      promptText = await applyProfilePromptPrefix(profile, args.prompt, {
-        cwd: this.workspace.workDir,
-        process: runtime.process!,
-        log: this.log,
-      });
       if (fork) {
-        promptText = `${FORK_CONTEXT_NOTICE}\n\n${promptText}`;
+        promptText = `${FORK_CONTEXT_NOTICE}\n\n${args.prompt}`;
+      } else {
+        promptText = await applyProfilePromptPrefix(profile, args.prompt, {
+          cwd: this.workspace.workDir,
+          process: runtime.process!,
+          log: this.log,
+        });
       }
     }
 

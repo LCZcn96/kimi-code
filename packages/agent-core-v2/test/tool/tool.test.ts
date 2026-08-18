@@ -258,6 +258,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
             republishStatus: () => {},
             getEffectiveThinkingLevel: () => 'off',
             isToolActive: () => false,
+            applyBindingSnapshot: () => {},
           } as never;
         }
         if (serviceId === IAgentLoopService) {
@@ -1194,6 +1195,23 @@ describe('Agent tool execution contract', () => {
     expect(lifecycle.get).toHaveBeenCalledWith('agent-existing');
   });
 
+  it('labels fork launches with the caller profile for display and approval rules', async () => {
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(lifecycle);
+    context.get(IAgentProfileService).update({ profileName: 'orchestrator' });
+
+    const execution = await agentTool(context).resolveExecution({
+      prompt: 'Continue',
+      description: 'Continue work',
+      fork: true,
+    });
+
+    if (execution.isError === true) throw new Error('expected runnable execution');
+    expect(execution.description).toBe('Launching orchestrator agent: Continue work');
+    expect(execution.matchesRule?.('orchestrator')).toBe(true);
+    expect(execution.matchesRule?.('coder')).toBe(false);
+  });
+
   it('returns an error when resuming with a subagent type', async () => {
     const lifecycle = createAgentLifecycleStub();
     const context = createAgentToolContext(lifecycle);
@@ -1296,6 +1314,7 @@ describe('Agent tool execution contract', () => {
       { role: 'assistant', content: [], toolCalls: [openCall] },
     ];
     const childAppend = vi.fn();
+    const childApplySnapshot = vi.fn();
     const handleServices = new Map([
       [
         'main',
@@ -1312,6 +1331,18 @@ describe('Agent tool execution contract', () => {
           [
             IAgentContextMemoryService,
             { _serviceBrand: undefined, get: () => [], append: childAppend },
+          ],
+          [
+            IAgentProfileService,
+            {
+              _serviceBrand: undefined,
+              data: () => ({ profileName: 'coder' }),
+              update: () => {},
+              republishStatus: () => {},
+              getEffectiveThinkingLevel: () => 'off',
+              isToolActive: () => false,
+              applyBindingSnapshot: childApplySnapshot,
+            },
           ],
         ]),
       ],
@@ -1333,6 +1364,10 @@ describe('Agent tool execution contract', () => {
     expect(result.output).toContain('child result');
     expect(childAppend).toHaveBeenCalledTimes(1);
     expect(childAppend).toHaveBeenCalledWith(...parentHistory.slice(0, 3));
+    expect(childApplySnapshot).toHaveBeenCalledTimes(1);
+    expect(childApplySnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ profileName: 'coder', modelAlias: 'mock-model' }),
+    );
     expect(lifecycle.create).toHaveBeenCalledWith(
       expect.objectContaining({
         binding: expect.objectContaining({ profile: 'coder', model: 'mock-model' }),
