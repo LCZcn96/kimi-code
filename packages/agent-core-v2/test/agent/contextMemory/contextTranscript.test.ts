@@ -409,4 +409,44 @@ describe('live fold parity', () => {
     expect(comparable(live)).toEqual(comparable(transcript.entries.slice(-2)));
     expect(transcript.foldedLength).toBe(live.length);
   });
+
+  it('removes injections owned by every removed prompt on multi-turn undo, matching the live view', () => {
+    const records: WireRecord[] = [
+      appendMessage(
+        userMessage('injA', {
+          kind: 'injection',
+          variant: 'image_compression',
+          ownerPromptId: 'p1',
+        }),
+      ),
+      appendMessage({ ...userMessage('u1', { kind: 'user' }), id: 'p1' }),
+      ...assistantStep('s1', 'a1'),
+      appendMessage(
+        userMessage('injB', {
+          kind: 'injection',
+          variant: 'image_compression',
+          ownerPromptId: 'p2',
+        }),
+      ),
+      appendMessage({ ...userMessage('u2', { kind: 'user' }), id: 'p2' }),
+      ...assistantStep('s2', 'a2'),
+      undo(2),
+    ];
+    const live = foldLive(records);
+    const transcript = reduceContextTranscript(records);
+    expect(comparable(transcript.entries)).toEqual(comparable(live));
+    expect(transcript.entries).toHaveLength(0);
+    expect(transcript.foldedLength).toBe(live.length);
+  });
+
+  it('keeps injections not owned by any removed prompt across undo', () => {
+    const result = reduceContextTranscript([
+      appendMessage(userMessage('note', { kind: 'injection', variant: 'test' })),
+      appendMessage(userMessage('u1')),
+      appendMessage(assistantMessage('a1')),
+      undo(1),
+    ]);
+    expect(texts(result)).toEqual(['note']);
+    expect(result.foldedLength).toBe(1);
+  });
 });
