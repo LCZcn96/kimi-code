@@ -289,6 +289,16 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });
 
+  it('rolls back when the smoke output merely contains the staged version as a substring', async () => {
+    // `0.7.01` contains `0.7.0` but is a different release — a mispublished
+    // endpoint could serve exactly that with a matching checksum.
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    const { spawnImpl } = createSpawnMock({ smokeStdout: `${STAGED_VERSION}1\n` });
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(makeDeps(exePath, { spawnImpl }));
+    expect(relaunched).toBe(false);
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
+  });
+
   it('continues startup with the old in-memory code when the re-exec spawn fails', async () => {
     await seedStagedUpdate(exePath, STAGED_VERSION);
     const { spawnImpl } = createSpawnMock({ reexecError: new Error('spawn EACCES') });

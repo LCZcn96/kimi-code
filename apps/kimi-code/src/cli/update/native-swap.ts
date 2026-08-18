@@ -102,9 +102,11 @@ async function recordSwapFailure(version: string): Promise<void> {
 }
 
 /**
- * Run `exe --version` as a smoke check: exit code 0 and the staged version in
- * the output. A swapped binary that cannot even print its version must not
- * replace the known-good exe.
+ * Run `exe --version` as a smoke check: exit code 0 and the EXACT staged
+ * version as the output (commander prints `<version>\n`). A substring check
+ * would let a mispublished binary satisfy the wrong target (`1.2.30`
+ * contains `1.2.3`) — and the manifest checksum cannot catch that case when
+ * it also describes the wrong artifact.
  */
 function smokeCheck(
   exePath: string,
@@ -145,7 +147,7 @@ function smokeCheck(
     // the check needs the complete version output.
     child.once('close', (code) => {
       clearTimeout(timeout);
-      finish(code === 0 && stdout.includes(staged.version));
+      finish(code === 0 && stdout.trim() === staged.version);
     });
   });
 }
@@ -157,19 +159,13 @@ interface ClaimedStaged {
 
 /**
  * Atomically claim the staged metadata file (rename is atomic on both NTFS
- * and POSIX, so exactly one of several concurrently starting instances wins).
- * Returns null when there is nothing staged, the file disappeared under us,
- * or the staged exe failed consistency checks.
- */
-/**
- * Atomically claim the staged metadata file (rename is atomic on both NTFS
  * and POSIX, so exactly one of several concurrently starting instances wins),
- * THEN validate the claimed contents. Claim-first matters: a concurrent
+ * THEN parse the claimed contents. Claim-first matters: a concurrent
  * downloader may supersede `staged.json` at any moment, so validating before
  * the rename could act on metadata this swap never claimed.
  *
  * Returns null when there is nothing staged, the file disappeared under us,
- * or the staged exe failed consistency checks.
+ * or the claimed metadata failed consistency checks.
  */
 async function claimStagedUpdate(exePath: string): Promise<ClaimedStaged | null> {
   const stateFile = getNativeStagedStateFile(exePath);
@@ -186,27 +182,29 @@ async function claimStagedUpdate(exePath: string): Promise<ClaimedStaged | null>
   } catch {
     return null;
   }
-  // Validate exactly the metadata we claimed.
+  // Parse exactly the metadata we claimed.
   const staged = await readStagedNativeUpdate(exePath, claimedPath);
   if (staged === null) {
     await unlink(claimedPath).catch(() => {});
     return null;
   }
-  // Re-verify the staged bytes against the recorded checksum: the exe could
-  // have been damaged on disk after the download verified it (corruption, a
-  // non-durable interrupted write), and the `--version` smoke check alone
-  // would not catch every such case. Only paid when an update is actually
-  // pending. A mismatch discards the stage so a later cycle re-downloads it —
-  // this is not a swap failure.
-  const digest = await hashFileSha256(stagedExePath(exePath, staged));
-  if (digest !== staged.sha256) {
-    logSwap('staged exe failed checksum verification, discarding', {
-      version: staged.version,
-    });
-    await discardClaimedUpdate(claimedPath);
-    return null;
-  }
   return { staged, claimedPath };
+}
+
+/**
+ * Put a claimed stage's metadata back so a later launch can retry — but only
+ * into a still-free state-file path: a downloader may have published a NEWER
+ * stage meanwhile, and a rename restore would silently replace it. link() is
+ * create-if-absent, so the restore never overwrites; when the path is taken,
+ * the newer stage wins and ours is discarded.
+ */
+async function restoreClaimedUpdate(exePath: string, claimedPath: string): Promise<void> {
+  try {
+    await link(claimedPath, getNativeStagedStateFile(exePath));
+    await unlink(claimedPath).catch(() => {});
+  } catch {
+    await discardClaimedUpdate(claimedPath);
+  }
 }
 
 /**
@@ -364,16 +362,6 @@ export async function maybeRelaunchWithStagedNativeUpdate(
 ): Promise<boolean> {
   if (!deps.isNative) return false;
   const swapInProgress = await sweepStaleNativeUpdateArtifacts(deps.exePath);
-  // An automatically staged payload applies only while automatic updates are
-  // enabled — both the env opt-out and the persisted `[upgrade]
-  // auto_install = false` preference gate it. A stage produced by an explicit
-  // `kimi upgrade` (manual) always applies. The pending read happens once
-  // here; the claim below re-reads.
-  const pending = await readStagedNativeUpdate(deps.exePath);
-  if (pending !== null && pending.manual !== true) {
-    if (isAutoUpdateDisabledByEnv(deps.env)) return false;
-    if (!(await shouldAutoInstallUpdates())) return false;
-  }
   if (isTruthy(deps.env[KIMI_CODE_UPDATE_REEXEC_ENV])) {
     // Read-once guard: drop it so this session's children (and any nested
     // kimi launches from them) do not inherit the swap skip.
@@ -406,6 +394,35 @@ export async function maybeRelaunchWithStagedNativeUpdate(
     logSwap('discarding staged update (not newer)', {
       staged: staged.version,
       current: deps.currentVersion,
+    });
+    return discard();
+  }
+
+  // Automatic stages apply only while automatic updates are enabled — both
+  // the env opt-out and the persisted `[upgrade] auto_install = false`
+  // preference gate them. Evaluated on the CLAIMED metadata: a pre-claim
+  // snapshot could be replaced by a downloader before the claim, smuggling an
+  // automatic payload past the gate. A manually requested stage always
+  // applies. When disabled, restore the claim (never overwriting a newer
+  // stage) so a later launch without the opt-out can still apply it.
+  if (
+    staged.manual !== true &&
+    (isAutoUpdateDisabledByEnv(deps.env) || !(await shouldAutoInstallUpdates()))
+  ) {
+    await restoreClaimedUpdate(deps.exePath, claimedPath);
+    return false;
+  }
+
+  // Re-verify the staged bytes against the recorded checksum: the exe could
+  // have been damaged on disk after the download verified it (corruption, a
+  // non-durable interrupted write), and the `--version` smoke check alone
+  // would not catch every such case. Only paid once the swap actually
+  // proceeds. A mismatch discards the stage so a later cycle re-downloads
+  // it — this is not a swap failure.
+  const digest = await hashFileSha256(stagedExePath(deps.exePath, staged));
+  if (digest !== staged.sha256) {
+    logSwap('staged exe failed checksum verification, discarding', {
+      version: staged.version,
     });
     return discard();
   }
@@ -450,12 +467,7 @@ export async function maybeRelaunchWithStagedNativeUpdate(
     // create-if-absent, so the restore can never overwrite; when the path is
     // taken, the newer stage wins and ours is discarded.
     logSwap('failed to move exe aside', { exePath: deps.exePath, error: String(error) });
-    try {
-      await link(claimedPath, getNativeStagedStateFile(deps.exePath));
-      await unlink(claimedPath).catch(() => {});
-    } catch {
-      await discardClaimedUpdate(claimedPath);
-    }
+    await restoreClaimedUpdate(deps.exePath, claimedPath);
     return false;
   }
 

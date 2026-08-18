@@ -195,23 +195,6 @@ async function cleanupStagingOrphans(stagingDir: string): Promise<void> {
   }
 }
 
-/** True when any swap claim file references the given staged exe name. */
-async function isReferencedBySwapClaim(stagingDir: string, exeFileName: string): Promise<boolean> {
-  const entries = await readdir(stagingDir).catch(() => [] as string[]);
-  for (const entry of entries) {
-    if (!entry.startsWith(`${KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME}.swap-`)) continue;
-    const raw = await readFile(join(stagingDir, entry), 'utf-8').catch(() => null);
-    if (raw === null) continue;
-    try {
-      const referenced: unknown = (JSON.parse(raw) as { exeFileName?: unknown }).exeFileName;
-      if (typeof referenced === 'string' && basename(referenced) === exeFileName) return true;
-    } catch {
-      // Unparseable claim — not a reference.
-    }
-  }
-  return false;
-}
-
 export interface StageNativeUpdateOptions {
   readonly version: string;
   /** Path of the installed executable the staged binary will later replace. */
@@ -405,18 +388,13 @@ export async function stageNativeUpdate(
     );
     return { status: 'staged', staged };
   } catch (error) {
+    // Remove only what THIS attempt privately owns: its unique .part file.
+    // The shared staged-exe path is never deleted on failure — every
+    // reference check is a snapshot, and a concurrent worker may have just
+    // renamed its verified payload onto that path (payloads publish before
+    // their metadata). An unreferenced exe is reaped by the age-gated
+    // orphan cleanup.
     await rm(partPath, { force: true }).catch(() => {});
-    // Remove only what THIS attempt owns. The staged exe name may belong to
-    // a concurrent worker's published stage (referenced by the current
-    // metadata) or to a live swap (referenced by its claim — the metadata is
-    // renamed away mid-swap, so the metadata check alone cannot see it).
-    const current = await readStagedNativeUpdate(options.exePath).catch(() => null);
-    const referenced =
-      current?.exeFileName === staged.exeFileName ||
-      (await isReferencedBySwapClaim(getNativeStagingDir(options.exePath), staged.exeFileName));
-    if (!referenced) {
-      await rm(stagedExePath(options.exePath, staged), { force: true }).catch(() => {});
-    }
     // Best effort: drop the staging dir itself when empty (a concurrent
     // worker's files keep it around — rmdir only removes empty dirs).
     await rmdir(getNativeStagingDir(options.exePath)).catch(() => {});
