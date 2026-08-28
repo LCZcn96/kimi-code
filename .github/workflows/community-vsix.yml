@@ -1,0 +1,88 @@
+name: Community VSIX
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "community-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package-win32-x64:
+    if: github.repository == 'LCZcn96/kimi-code'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test downstream regressions
+        run: >-
+          pnpm --dir apps/vscode exec vitest run --config vitest.config.ts
+          test/settings-store.test.ts test/event-adapter.test.ts
+          test/replay-adapter.test.ts test/vsix-package.test.ts
+
+      - name: Typecheck extension
+        run: pnpm --dir apps/vscode typecheck
+
+      - name: Verify release version
+        if: startsWith(github.ref, 'refs/tags/community-v')
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw -Encoding UTF8 apps/vscode/package.json | ConvertFrom-Json).version
+          $expectedTag = "community-v$version"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Tag $env:GITHUB_REF_NAME does not match extension version $version (expected $expectedTag)."
+          }
+
+      - name: Package and audit VSIX
+        run: pnpm --dir apps/vscode package:platform -- --target win32-x64
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          $assetDir = Resolve-Path apps/vscode/artifacts/vsix
+          $lines = Get-ChildItem -LiteralPath $assetDir -Filter *.vsix -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            }
+          if ($lines.Count -eq 0) {
+            throw "No VSIX assets were produced."
+          }
+          $checksumPath = Join-Path $assetDir SHA256SUMS.txt
+          [System.IO.File]::WriteAllLines($checksumPath, $lines, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: kimi-code-community-win32-x64
+          path: apps/vscode/artifacts/vsix/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/community-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem apps/vscode/artifacts/vsix -File | Select-Object -ExpandProperty FullName
+          gh release create $env:GITHUB_REF_NAME @assets `
+            --verify-tag `
+            --title "Kimi Code Community $env:GITHUB_REF_NAME (Unofficial)" `
+            --generate-notes
