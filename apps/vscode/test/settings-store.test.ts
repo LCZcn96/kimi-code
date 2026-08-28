@@ -245,6 +245,39 @@ describe("Webview MCP update bridge", () => {
       }),
     ]);
   });
+
+  it("keeps streamChat alive without the generic bridge timeout", async () => {
+    const posted: Array<{ id: string; method: string }> = [];
+    let receiveMessage: ((event: { data: unknown }) => void) | undefined;
+    const scheduleTimeout = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>);
+    vi.stubGlobal("setTimeout", scheduleTimeout);
+    vi.stubGlobal("clearTimeout", vi.fn());
+    vi.stubGlobal("document", {
+      body: { getAttribute: () => "stream-test-view" },
+    });
+    vi.stubGlobal("window", {
+      addEventListener: (_type: string, listener: (event: { data: unknown }) => void) => {
+        receiveMessage = listener;
+      },
+    });
+    vi.stubGlobal("acquireVsCodeApi", () => ({
+      postMessage: (message: { id: string; method: string }) => posted.push(message),
+      getState: () => undefined,
+      setState: () => undefined,
+    }));
+    vi.resetModules();
+    const { bridge } = await import("../webview-ui/src/services/bridge");
+
+    const history = bridge.getInputHistory();
+    expect(scheduleTimeout).toHaveBeenCalledOnce();
+    receiveMessage?.({ data: { id: posted[0].id, result: [] } });
+    await expect(history).resolves.toEqual([]);
+
+    const stream = bridge.streamChat("long turn", "model", "off", false);
+    expect(scheduleTimeout).toHaveBeenCalledOnce();
+    receiveMessage?.({ data: { id: posted[1].id, result: { done: true } } });
+    await expect(stream).resolves.toEqual({ done: true });
+  });
 });
 
 describe("Webview chat error recovery", () => {
