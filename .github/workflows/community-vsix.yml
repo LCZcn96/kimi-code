@@ -9,9 +9,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: community-vsix-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   package-win32-x64:
-    if: github.repository == 'LCZcn96/kimi-code'
+    if: ${{ github.repository == 'LCZcn96/kimi-code' && github.event.deleted != true }}
     runs-on: windows-latest
 
     steps:
