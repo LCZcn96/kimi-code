@@ -1265,7 +1265,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     expect(runtime.isBusy).toBe(false);
     expect(streamEvents(rig.broadcasts)).toContainEqual({
       type: "CompactionEnd",
-      payload: {},
+      payload: { outcome: "completed" },
       _sessionId: runtime.id,
     });
   });

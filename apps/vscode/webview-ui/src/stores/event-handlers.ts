@@ -2,8 +2,8 @@ import { bridge } from "@/services";
 import { useApprovalStore } from "./approval.store";
 import { useSettingsStore } from "./settings.store";
 import { isPreflightError, isUserInterrupt } from "shared/errors";
-import type { ChatMessage, UIStep, UIStepItem, ChatState, TokenUsage } from "./chat.store";
-import type { ContentPart, ToolCall, ToolResult, TurnBegin, SubagentEvent, ApprovalRequestPayload, DiffBlock, RunResult, QuestionRequest } from "shared/legacy-sdk";
+import type { ChatMessage, UIStep, UIStepItem, ChatState, TokenUsage, CompactionStatus } from "./chat.store";
+import type { ContentPart, ToolCall, ToolResult, TurnBegin, SubagentEvent, ApprovalRequestPayload, DiffBlock, RunResult, QuestionRequest, CompactionOutcome } from "shared/legacy-sdk";
 import type { UIStreamEvent, StreamError } from "shared/types";
 
 type EventHandler = (draft: ChatState, payload: any) => void;
@@ -244,12 +244,30 @@ function isTaskToolResult(steps: UIStep[] | undefined, toolCallId: string): bool
   return toolItem?.call.name === "Task" || toolItem?.call.name === "Agent";
 }
 
+function settleLastRunningCompaction(draft: ChatState, status: Exclude<CompactionStatus, "running">): void {
+  for (let messageIndex = draft.messages.length - 1; messageIndex >= 0; messageIndex--) {
+    const steps = draft.messages[messageIndex].steps;
+    if (!steps) continue;
+    for (let stepIndex = steps.length - 1; stepIndex >= 0; stepIndex--) {
+      const items = steps[stepIndex].items;
+      for (let itemIndex = items.length - 1; itemIndex >= 0; itemIndex--) {
+        const item = items[itemIndex];
+        if (item.type === "compaction" && item.status === "running") {
+          item.status = status;
+          return;
+        }
+      }
+    }
+  }
+}
+
 function handlePreflightError(draft: ChatState, _code: string, _message: string): void {
   // Pre-flight: 删除未发送成功的消息，恢复输入
   addTokenUsage(draft.tokenUsage, draft.activeTokenUsage);
   draft.activeTokenUsage = createEmptyTokenUsage();
   draft.isStreaming = false;
   draft.isCompacting = false;
+  settleLastRunningCompaction(draft, "interrupted");
   useApprovalStore.getState().clearRequests();
 
   // 删除空的 assistant 消息
@@ -274,6 +292,7 @@ function handleRuntimeError(draft: ChatState, code: string, message: string, det
   draft.activeTokenUsage = createEmptyTokenUsage();
   draft.isStreaming = false;
   draft.isCompacting = false;
+  settleLastRunningCompaction(draft, "interrupted");
   useApprovalStore.getState().clearRequests();
 
   const lastAssistant = getLastAssistant(draft);
@@ -296,11 +315,19 @@ const eventHandlers: Record<string, EventHandler> = {
     }
   },
 
-  stream_complete: (draft, _payload: { result: RunResult }) => {
+  stream_complete: (draft, payload: { result: RunResult }) => {
     addTokenUsage(draft.tokenUsage, draft.activeTokenUsage);
     draft.activeTokenUsage = createEmptyTokenUsage();
     draft.isStreaming = false;
     draft.isCompacting = false;
+    settleLastRunningCompaction(
+      draft,
+      payload.result.status === "finished"
+        ? "completed"
+        : payload.result.status === "cancelled"
+          ? "cancelled"
+          : "interrupted",
+    );
     draft.pendingInput = null;
     useApprovalStore.getState().clearRequests();
     const lastAssistant = getLastAssistant(draft);
@@ -325,6 +352,7 @@ const eventHandlers: Record<string, EventHandler> = {
         draft.activeTokenUsage = createEmptyTokenUsage();
         draft.isStreaming = false;
         draft.isCompacting = false;
+        settleLastRunningCompaction(draft, "cancelled");
         useApprovalStore.getState().clearRequests();
         const lastAssistant = getLastAssistant(draft);
         if (lastAssistant?.steps) {
@@ -376,12 +404,13 @@ const eventHandlers: Record<string, EventHandler> = {
       }
 
       finishAllTextItems(last.steps);
-      last.steps.at(-1)!.items.push({ type: "compaction" });
+      last.steps.at(-1)!.items.push({ type: "compaction", status: "running" });
     }
   },
 
-  CompactionEnd: (draft) => {
+  CompactionEnd: (draft, payload: { outcome: CompactionOutcome }) => {
     draft.isCompacting = false;
+    settleLastRunningCompaction(draft, payload.outcome);
   },
 
   StepBegin: (draft, payload) => {

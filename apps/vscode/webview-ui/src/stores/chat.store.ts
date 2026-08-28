@@ -7,7 +7,7 @@ import { toast } from "@/components/ui/sonner";
 
 import { useSettingsStore } from "./settings.store";
 import { processEvent } from "./event-handlers";
-import type { StatusUpdate, ContentPart, QuestionRequest, ToolResult } from "shared/legacy-sdk";
+import type { StatusUpdate, ContentPart, QuestionRequest, ToolResult, CompactionOutcome } from "shared/legacy-sdk";
 import type { UIStreamEvent } from "shared/types";
 
 const HANDSHAKE_TIMEOUT_MS = 30_000;
@@ -30,10 +30,12 @@ export interface InlineError {
   detail?: string; // 服务器原始错误信息
 }
 
+export type CompactionStatus = "running" | CompactionOutcome;
+
 export type UIStepItem =
   | { type: "thinking"; content: string; finished?: boolean }
   | { type: "text"; content: string; finished?: boolean }
-  | { type: "compaction" }
+  | { type: "compaction"; status: CompactionStatus }
   | { type: "steer"; content: string | ContentPart[] }
   | {
       type: "tool_use";

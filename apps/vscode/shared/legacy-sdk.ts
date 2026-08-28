@@ -128,13 +128,15 @@ export interface SubagentEvent {
   event: LegacyWireEvent;
 }
 
+export type CompactionOutcome = 'completed' | 'cancelled' | 'blocked' | 'interrupted';
+
 export type LegacyWireEvent =
   | { type: 'TurnBegin'; payload: TurnBegin & { forkable?: boolean } }
   | { type: 'TurnEnd'; payload: Record<string, never> }
   | { type: 'StepBegin'; payload: { n: number } }
   | { type: 'StepInterrupted'; payload: Record<string, never> }
   | { type: 'CompactionBegin'; payload: Record<string, never> }
-  | { type: 'CompactionEnd'; payload: Record<string, never> }
+  | { type: 'CompactionEnd'; payload: { outcome: CompactionOutcome } }
   | { type: 'StatusUpdate'; payload: StatusUpdate }
   | { type: 'ContentPart'; payload: ContentPart }
   | { type: 'ToolCall'; payload: ToolCall }

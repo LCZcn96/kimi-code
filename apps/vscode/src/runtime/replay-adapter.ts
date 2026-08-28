@@ -184,9 +184,10 @@ function replayAgentToWebviewEvents(
         if (!turnOpen) break;
         ensureStep();
         events.push(withSession({ type: "CompactionBegin", payload: {} }, sessionId));
-        if (record.result !== undefined) {
-          events.push(withSession({ type: "CompactionEnd", payload: {} }, sessionId));
-        }
+        events.push(withSession({
+          type: "CompactionEnd",
+          payload: { outcome: record.result === undefined ? "interrupted" : "completed" },
+        }, sessionId));
         break;
       case "plan_updated":
         if (turnOpen) {
@@ -407,7 +408,10 @@ function renderSubagentInvocation(
       }
       case "compaction":
         emit({ type: "CompactionBegin", payload: {} });
-        if (record.result !== undefined) emit({ type: "CompactionEnd", payload: {} });
+        emit({
+          type: "CompactionEnd",
+          payload: { outcome: record.result === undefined ? "interrupted" : "completed" },
+        });
         break;
       case "plan_updated":
         emit({ type: "StatusUpdate", payload: { plan_mode: record.enabled } });

@@ -471,12 +471,15 @@ describe('event adapter (projects SDK events into the legacy Webview contract)',
 
   it.each([
     {
-      type: 'compaction.completed' as const,
-      result: { summary: 'Summary', compactedCount: 3, tokensBefore: 100, tokensAfter: 30 },
+      event: {
+        type: 'compaction.completed' as const,
+        result: { summary: 'Summary', compactedCount: 3, tokensBefore: 100, tokensAfter: 30 },
+      },
+      outcome: 'completed',
     },
-    { type: 'compaction.cancelled' as const },
-    { type: 'compaction.blocked' as const, turnId: 7 },
-  ])('emits compaction end when SDK reports $type', (event) => {
+    { event: { type: 'compaction.cancelled' as const }, outcome: 'cancelled' },
+    { event: { type: 'compaction.blocked' as const, turnId: 7 }, outcome: 'blocked' },
+  ])('preserves the outcome when SDK reports $event.type', ({ event, outcome }) => {
     const result = adaptSdkEvent(createEventAdapterState(), {
       ...event,
       sessionId: 'session-1',
@@ -485,7 +488,7 @@ describe('event adapter (projects SDK events into the legacy Webview contract)',
 
     expect(result.event).toEqual({
       type: 'CompactionEnd',
-      payload: {},
+      payload: { outcome },
       _sessionId: 'session-1',
     });
   });

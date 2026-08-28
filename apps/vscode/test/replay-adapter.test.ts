@@ -341,11 +341,11 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
 
     expect(events.filter((event) => event.type.startsWith("Compaction"))).toEqual([
       { type: "CompactionBegin", payload: {}, _sessionId: "session-1" },
-      { type: "CompactionEnd", payload: {}, _sessionId: "session-1" },
+      { type: "CompactionEnd", payload: { outcome: "completed" }, _sessionId: "session-1" },
     ]);
   });
 
-  it("leaves an unfinished compaction open when its replay record has no result", () => {
+  it("marks an unfinished replayed compaction as interrupted", () => {
     const events = replay([
       record(message("user", [{ type: "text", text: "Continue" }], { origin: { kind: "user" } })),
       { type: "compaction", time: 2, instruction: "Keep decisions" },
@@ -353,6 +353,7 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
 
     expect(events.filter((event) => event.type.startsWith("Compaction"))).toEqual([
       { type: "CompactionBegin", payload: {}, _sessionId: "session-1" },
+      { type: "CompactionEnd", payload: { outcome: "interrupted" }, _sessionId: "session-1" },
     ]);
   });
 

@@ -4,6 +4,8 @@
  * Wiring: the real Zustand store and MCP bridge; settings saves, toast, and the VS Code messaging API are the only replaced boundaries.
  * Run: pnpm exec vitest run --config apps/vscode/vitest.config.ts test/settings-store.test.ts
  */
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MCP_SECRET_MASK } from "../shared/legacy-sdk";
@@ -37,6 +39,7 @@ import {
   useSettingsStore,
 } from "../webview-ui/src/stores/settings.store";
 import { useChatStore } from "../webview-ui/src/stores/chat.store";
+import { CompactionCard } from "../webview-ui/src/components/CompactionCard";
 
 const MODELS = [
   { id: "plain", name: "Plain", provider: "managed:kimi-code", capabilities: [] },
@@ -321,6 +324,52 @@ describe("Webview chat error recovery", () => {
       message: "Service temporarily unavailable.",
       detail: "HTTP 400: function name is invalid",
     });
+  });
+});
+
+describe("Webview compaction status", () => {
+  const startCompaction = (input: string) => {
+    useChatStore.getState().processEvent({ type: "TurnBegin", payload: { user_input: input } });
+    useChatStore.getState().processEvent({ type: "StepBegin", payload: { n: 1 } });
+    useChatStore.getState().processEvent({ type: "CompactionBegin", payload: {} });
+  };
+
+  it("keeps a cancelled card stopped when the next compaction starts", () => {
+    startCompaction("/compact first");
+    useChatStore.getState().processEvent({
+      type: "stream_complete",
+      result: { status: "cancelled" },
+    });
+    useChatStore.getState().processEvent({
+      type: "CompactionEnd",
+      payload: { outcome: "cancelled" },
+    });
+    startCompaction("/compact second");
+
+    const items = useChatStore
+      .getState()
+      .messages.flatMap((message) => message.steps ?? [])
+      .flatMap((step) => step.items)
+      .filter((item) => item.type === "compaction");
+    expect(items).toEqual([
+      { type: "compaction", status: "cancelled" },
+      { type: "compaction", status: "running" },
+    ]);
+
+    const html = renderToStaticMarkup(
+      createElement(
+        "div",
+        null,
+        ...items.map((item, index) =>
+          createElement(CompactionCard, {
+            key: index,
+            status: item.status,
+          }),
+        ),
+      ),
+    );
+    expect(html).toContain("Compaction stopped");
+    expect(html.match(/animate-spin/g)).toHaveLength(1);
   });
 });
 

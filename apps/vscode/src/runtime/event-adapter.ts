@@ -313,12 +313,20 @@ function mapLegacyWireEvent(
         state,
         event: { type: 'CompactionBegin', payload: {} },
       };
-    case 'compaction.blocked':
-    case 'compaction.cancelled':
     case 'compaction.completed':
       return {
         state,
-        event: { type: 'CompactionEnd', payload: {} },
+        event: { type: 'CompactionEnd', payload: { outcome: 'completed' } },
+      };
+    case 'compaction.cancelled':
+      return {
+        state,
+        event: { type: 'CompactionEnd', payload: { outcome: 'cancelled' } },
+      };
+    case 'compaction.blocked':
+      return {
+        state,
+        event: { type: 'CompactionEnd', payload: { outcome: 'blocked' } },
       };
     default:
       return { state };
