@@ -9,15 +9,17 @@ Moonshot AI. The upstream project remains
 
 The community release changes and distributes only `apps/vscode`. It does not
 publish replacement CLI, SDK, npm, Marketplace, or Open VSX packages. Version
-0.1.0 is based on upstream VS Code extension 0.7.3 at commit `d8317d81e` and
+0.2.0 is based on upstream VS Code extension 0.7.3 at commit `d8317d81e` and
 contains:
 
 - the long-running stream timeout fix proposed in upstream PR
   [#3032](https://github.com/MoonshotAI/kimi-code/pull/3032);
 - correct terminal and visual state for completed, cancelled, blocked, and
-  interrupted compaction cards; and
+  interrupted compaction cards;
 - lower streaming resize cost through event coalescing and a lightweight
-  unfinished-Markdown path.
+  unfinished-Markdown path; and
+- prompt navigation with a compact outline, previous/next actions, active-item
+  tracking, and clickable shortcut markers along the left edge of the chat.
 
 The packaged extension ID is `lczcn96.kimi-code`. It deliberately keeps the
 upstream internal `kimi.*` identifiers so that sessions, settings, and behavior

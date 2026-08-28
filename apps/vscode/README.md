@@ -4,8 +4,8 @@ An unofficial, community-maintained build of the Kimi Code extension for VS
 Code. It is based on the open-source extension from Moonshot AI, but it is not
 affiliated with or endorsed by Moonshot AI.
 
-This build currently packages Windows x64 only and contains three downstream
-fixes:
+This build currently packages Windows x64 only and contains downstream fixes
+and features:
 
 - Keep long-running chat streams alive instead of applying the bridge's generic
   ten-minute request timeout (the change proposed in upstream PR
@@ -14,6 +14,8 @@ fixes:
   stopped cards no longer appear successful or start animating again.
 - Reduce resize stalls during streaming by coalescing text deltas and deferring
   rich Markdown parsing until a text or thinking block has finished.
+- Navigate long conversations through a compact prompt/response outline,
+  previous/next controls, and scroll-aware shortcut markers on the left edge.
 
 ## Features
 

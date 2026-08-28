@@ -1,5 +1,13 @@
 # Changelog
 
+## Community build 0.2.0
+
+### Added
+
+- Added prompt navigation with a compact conversation outline, previous/next
+  controls, scroll-aware highlighting, and clickable shortcut markers on the
+  left edge of the chat.
+
 ## Community build 0.1.0
 
 ### Fixed
