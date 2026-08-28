@@ -76,6 +76,35 @@ describe('installed VSIX Extension Host smoke', () => {
     expect(env.KIMI_VSCODE_SMOKE_OS_HOME).toContain('os-home');
   });
 
+  it('clears the parent Extension Host Node mode only while launching VS Code', async () => {
+    const fixture = await makeFixture();
+    const originalValue = process.env.ELECTRON_RUN_AS_NODE;
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    vscodeTest.runTests.mockImplementationOnce(async (options) => {
+      expect(process.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+      await writeFile(
+        options.extensionTestsEnv.KIMI_VSCODE_SMOKE_REPORT,
+        JSON.stringify({ vscode: options.version }),
+        'utf8',
+      );
+    });
+
+    try {
+      await runExtensionHostSmoke({
+        version: '1.100.0',
+        vsixPath: fixture.vsixPath,
+        cachePath: fixture.cachePath,
+      });
+      expect(process.env.ELECTRON_RUN_AS_NODE).toBe('1');
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.ELECTRON_RUN_AS_NODE;
+      } else {
+        process.env.ELECTRON_RUN_AS_NODE = originalValue;
+      }
+    }
+  });
+
   it('rejects a cached host that does not match an exact requested version', async () => {
     const fixture = await makeFixture();
     vscodeTest.runTests.mockImplementationOnce(async (options) => {

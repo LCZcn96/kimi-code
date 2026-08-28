@@ -31,12 +31,12 @@ describe('VSIX package CLI (target planning and validation)', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.match(/Would package /g)).toHaveLength(6);
-    expect(result.stdout).toContain('kimi-code-darwin-x64.vsix');
-    expect(result.stdout).toContain('kimi-code-darwin-arm64.vsix');
-    expect(result.stdout).toContain('kimi-code-linux-x64.vsix');
-    expect(result.stdout).toContain('kimi-code-linux-arm64.vsix');
-    expect(result.stdout).toContain('kimi-code-win32-x64.vsix');
-    expect(result.stdout).toContain('kimi-code-win32-arm64.vsix');
+    expect(result.stdout).toContain('kimi-code-community-darwin-x64.vsix');
+    expect(result.stdout).toContain('kimi-code-community-darwin-arm64.vsix');
+    expect(result.stdout).toContain('kimi-code-community-linux-x64.vsix');
+    expect(result.stdout).toContain('kimi-code-community-linux-arm64.vsix');
+    expect(result.stdout).toContain('kimi-code-community-win32-x64.vsix');
+    expect(result.stdout).toContain('kimi-code-community-win32-arm64.vsix');
   });
 
   it('accepts a Windows ARM target when the output path contains spaces', async () => {
@@ -54,7 +54,7 @@ describe('VSIX package CLI (target planning and validation)', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.match(/Would package /g)).toHaveLength(1);
-    expect(result.stdout).toContain('kimi-code-win32-arm64.vsix');
+    expect(result.stdout).toContain('kimi-code-community-win32-arm64.vsix');
   });
 
   it('rejects an unknown target before a build starts', () => {

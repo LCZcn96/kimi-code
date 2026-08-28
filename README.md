@@ -1,5 +1,12 @@
 # Kimi Code CLI
 
+> [!IMPORTANT]
+> This repository branch also carries **Kimi Code Community**, an unofficial,
+> community-maintained VS Code build. It is not affiliated with or endorsed by
+> Moonshot AI. See [COMMUNITY.md](COMMUNITY.md) for downloads, included fixes,
+> compatibility limits, and the upstream-sync policy. The CLI documentation
+> below continues to describe the upstream project.
+
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://moonshotai.github.io/kimi-code/en/) <br>
 [Documentation](https://moonshotai.github.io/kimi-code/en/) · [Issues](https://github.com/MoonshotAI/kimi-code/issues) · [中文](README.zh-CN.md)
 

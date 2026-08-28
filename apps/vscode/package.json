@@ -1,15 +1,15 @@
 {
   "name": "kimi-code",
-  "publisher": "moonshot-ai",
-  "displayName": "Kimi Code",
-  "description": "Official Kimi Code plugin for VS Code",
-  "version": "0.7.3",
+  "publisher": "lczcn96",
+  "displayName": "Kimi Code Community (Unofficial)",
+  "description": "Unofficial community-maintained Kimi Code extension for VS Code",
+  "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MoonshotAI/kimi-code.git",
+    "url": "git+https://github.com/LCZcn96/kimi-code.git",
     "directory": "apps/vscode"
   },
   "engines": {
@@ -49,7 +49,7 @@
   "icon": "resources/kimi-icon-storefront.png",
   "contributes": {
     "configuration": {
-      "title": "Kimi Code",
+      "title": "Kimi Code Community",
       "properties": {
         "kimi.yoloMode": {
           "type": "boolean",
@@ -170,7 +170,7 @@
       "activitybar": [
         {
           "id": "kimi-sidebar",
-          "title": "Kimi Code",
+          "title": "Kimi Code Community",
           "icon": "resources/kimi-icon.svg"
         }
       ]
@@ -180,7 +180,7 @@
         {
           "type": "webview",
           "id": "kimi.webview",
-          "name": "Kimi Code"
+          "name": "Kimi Code Community"
         }
       ]
     },

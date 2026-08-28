@@ -1,5 +1,19 @@
 # Changelog
 
+## Community build 0.1.0
+
+### Fixed
+
+- Removed the generic ten-minute RPC timeout from active chat streams while
+  retaining timeouts for ordinary bridge calls.
+- Retained distinct `/compact` outcomes and stopped settled compaction cards
+  from re-entering their running animation.
+- Reduced streaming resize stalls by batching adjacent text/thinking deltas and
+  rendering unfinished Markdown as lightweight plain text.
+
+This is an unofficial build based on upstream Kimi Code 0.7.3. It is not
+affiliated with or endorsed by Moonshot AI.
+
 ## 0.7.3
 
 ### Patch Changes

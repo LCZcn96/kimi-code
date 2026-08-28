@@ -1,6 +1,19 @@
-# Kimi Code
+# Kimi Code Community (Unofficial)
 
-AI coding assistant for VS Code, built for long-context workflows and complex coding tasks.
+An unofficial, community-maintained build of the Kimi Code extension for VS
+Code. It is based on the open-source extension from Moonshot AI, but it is not
+affiliated with or endorsed by Moonshot AI.
+
+This build currently packages Windows x64 only and contains three downstream
+fixes:
+
+- Keep long-running chat streams alive instead of applying the bridge's generic
+  ten-minute request timeout (the change proposed in upstream PR
+  [#3032](https://github.com/MoonshotAI/kimi-code/pull/3032)).
+- Preserve completed, cancelled, blocked, and interrupted `/compact` outcomes;
+  stopped cards no longer appear successful or start animating again.
+- Reduce resize stalls during streaming by coalescing text deltas and deferring
+  rich Markdown parsing until a text or thinking block has finished.
 
 ## Features
 
@@ -15,10 +28,25 @@ AI coding assistant for VS Code, built for long-context workflows and complex co
 
 Kimi Code requires VS Code 1.100.0 or later.
 
-1. Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=moonshot-ai.kimi-code)
-2. Open a folder in VS Code
-3. Click the Kimi icon in the Activity Bar
-4. Sign in with a [kimi.com/code](https://www.kimi.com/code) subscription, or use a provider already configured in the shared `config.toml`
+1. Disable or uninstall the official `moonshot-ai.kimi-code` extension. The two
+   builds use the same command, view, configuration, and session identifiers,
+   so running them together is unsupported.
+2. Download `kimi-code-community-win32-x64.vsix` and `SHA256SUMS.txt` from the
+   matching [GitHub release](https://github.com/LCZcn96/kimi-code/releases).
+3. Compare the VSIX SHA-256 digest with `SHA256SUMS.txt`, then install it:
+
+   ```powershell
+   (Get-FileHash -Algorithm SHA256 .\kimi-code-community-win32-x64.vsix).Hash.ToLowerInvariant()
+   code --install-extension .\kimi-code-community-win32-x64.vsix --force
+   ```
+
+4. Open a folder in VS Code, click **Kimi Code Community** in the Activity Bar,
+   and sign in or use an existing provider configuration.
+
+VSIX installations do not receive this fork's releases automatically. Repeat
+the download, checksum, and install steps to update. The extension ID is
+`lczcn96.kimi-code`; release assets are the supported distribution channel,
+not the VS Code Marketplace.
 
 The extension runs the Kimi Code Node SDK in the VS Code Extension Host. When
 the extension and the Kimi Code terminal app resolve to the same
@@ -34,9 +62,12 @@ home and does not delete the legacy source. Legacy Kimi Code OAuth and MCP OAuth
 credentials are not copied, so those connections must be authorized again.
 See [the changelog](CHANGELOG.md) for the full compatibility notes.
 
-## Docs
+## Upstream docs
 
-Official doc for Kimi Code can be found at [www.kimi.com/code/docs](https://www.kimi.com/code/docs/en/kimi-code-for-vscode/guides/getting-started.html)
+The upstream Kimi Code documentation is available at
+[www.kimi.com/code/docs](https://www.kimi.com/code/docs/en/kimi-code-for-vscode/guides/getting-started.html).
+Fork-specific maintenance and release details are in
+[COMMUNITY.md](https://github.com/LCZcn96/kimi-code/blob/community/COMMUNITY.md).
 
 ## License
 

@@ -4,7 +4,6 @@ const os = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
 
-const EXTENSION_ID = "moonshot-ai.kimi-code";
 const EXPECTED_COMMANDS = [
   "kimi.clearAllState",
   "kimi.focusInput",
@@ -29,11 +28,12 @@ exports.run = async function run() {
     ? `${path.sep}${isolatedHome.slice(root.length)}`
     : isolatedHome;
 
-  const extension = vscode.extensions.getExtension(EXTENSION_ID);
-  assert.ok(extension, `${EXTENSION_ID} is not installed in the isolated Extension Host`);
   const sourceManifest = JSON.parse(
     await readFile(path.join(__dirname, "..", "..", "package.json"), "utf8"),
   );
+  const extensionId = `${sourceManifest.publisher}.${sourceManifest.name}`;
+  const extension = vscode.extensions.getExtension(extensionId);
+  assert.ok(extension, `${extensionId} is not installed in the isolated Extension Host`);
   assert.equal(extension.packageJSON.version, sourceManifest.version);
   assert.equal(extension.packageJSON.main, "./dist/extension.js");
   assert.ok(process.env.KIMI_CODE_HOME, "KIMI_CODE_HOME must point at the isolated test home");
@@ -67,7 +67,7 @@ exports.run = async function run() {
 
   console.log(
     JSON.stringify({
-      extension: EXTENSION_ID,
+      extension: extensionId,
       version: extension.packageJSON.version,
       vscode: vscode.version,
       remoteName: vscode.env.remoteName ?? null,

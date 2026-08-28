@@ -6,11 +6,12 @@ import { fileURLToPath } from "node:url";
 
 import { runTests, runVSCodeCommand } from "@vscode/test-electron";
 
-import { isMainModule } from "./vsix-targets.mjs";
+import { isMainModule, vsixFileName } from "./vsix-targets.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(scriptDir, "..");
 const defaultCachePath = join(tmpdir(), "kimi-vscode-test-cache");
+const removeOptions = { recursive: true, force: true, maxRetries: 20, retryDelay: 250 };
 
 export async function runExtensionHostSmoke(options = {}) {
   const version = options.version ?? "stable";
@@ -71,7 +72,7 @@ export async function runExtensionHostSmoke(options = {}) {
       throw new Error(`VSIX installation did not report success:\n${installOutput.trim()}`);
     }
 
-    await runTests({
+    await runExtensionTests({
       ...downloadOptions,
       extensionDevelopmentPath: paths.harness,
       extensionTestsPath: join(appDir, "test", "extension-host", "index.cjs"),
@@ -103,15 +104,29 @@ export async function runExtensionHostSmoke(options = {}) {
     return { version, vscodeVersion: report.vscode, vsixPath, cachePath };
   } finally {
     await Promise.all([
-      rm(root, { recursive: true, force: true }),
-      disposableCache ? rm(cachePath, { recursive: true, force: true }) : Promise.resolve(),
+      rm(root, removeOptions),
+      disposableCache ? rm(cachePath, removeOptions) : Promise.resolve(),
     ]);
+  }
+}
+
+async function runExtensionTests(options) {
+  const electronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
+  delete process.env.ELECTRON_RUN_AS_NODE;
+  try {
+    return await runTests(options);
+  } finally {
+    if (electronRunAsNode === undefined) {
+      delete process.env.ELECTRON_RUN_AS_NODE;
+    } else {
+      process.env.ELECTRON_RUN_AS_NODE = electronRunAsNode;
+    }
   }
 }
 
 function defaultVsixPath() {
   const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : process.arch;
-  return join(appDir, "artifacts", "vsix", `kimi-code-${process.platform}-${arch}.vsix`);
+  return join(appDir, "artifacts", "vsix", vsixFileName(`${process.platform}-${arch}`));
 }
 
 async function writeHarnessManifest(directory) {
