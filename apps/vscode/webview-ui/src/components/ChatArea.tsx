@@ -1,10 +1,14 @@
+import { useEffect, useMemo, useState } from "react";
 import ScrollToBottom, { useScrollToBottom, useSticky } from "react-scroll-to-bottom";
-import { IconArrowDown } from "@tabler/icons-react";
+import { IconArrowDown, IconArrowUp, IconList, IconX } from "@tabler/icons-react";
 import { ChatMessage } from "./ChatMessage";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { useChatStore } from "@/stores";
 import { cn } from "@/lib/utils";
+import { getPromptNavigationItems, type PromptNavigationItem } from "@/lib/prompt-navigation";
 import { getForkTurnIndex } from "shared/fork-turn-index";
+
+const findPromptAnchor = (id: string) => document.querySelector<HTMLElement>(`#${CSS.escape(`prompt-${id}`)}`);
 
 function ScrollButton() {
   const scrollToBottom = useScrollToBottom();
@@ -22,22 +26,178 @@ function ScrollButton() {
   );
 }
 
-function MessageList() {
-  const messages = useChatStore((s) => s.messages);
-  const isStreaming = useChatStore((s) => s.isStreaming);
+function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
+  const [activeIndex, setActiveIndex] = useState(Math.max(0, items.length - 1));
+  const [open, setOpen] = useState(false);
+  const itemIds = items.map((item) => item.id).join("\n");
+
+  useEffect(() => {
+    const ids = itemIds ? itemIds.split("\n") : [];
+    const scrollView = document.querySelector<HTMLElement>(".chat-scroll-view");
+    if (!scrollView || ids.length < 2) return;
+
+    let frame = 0;
+    const syncActivePrompt = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const threshold = scrollView.getBoundingClientRect().top + Math.min(80, scrollView.clientHeight / 4);
+        let nextIndex = 0;
+        for (let index = 0; index < ids.length; index++) {
+          const anchor = findPromptAnchor(ids[index]);
+          if (anchor && anchor.getBoundingClientRect().top <= threshold) {
+            nextIndex = index;
+          } else if (anchor) {
+            break;
+          }
+        }
+        setActiveIndex((current) => current === nextIndex ? current : nextIndex);
+      });
+    };
+
+    syncActivePrompt();
+    scrollView.addEventListener("scroll", syncActivePrompt, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      scrollView.removeEventListener("scroll", syncActivePrompt);
+    };
+  }, [itemIds]);
+
+  if (items.length < 2) return null;
+
+  const navigateTo = (index: number) => {
+    const item = items[index];
+    if (!item) return;
+    findPromptAnchor(item.id)?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "start",
+    });
+    setActiveIndex(index);
+  };
 
   return (
     <>
-      <div className="">
-        {messages.map((message, idx) => (
-          <ChatMessage
-            key={message.id}
-            message={message}
-            turnIndex={getForkTurnIndex(messages, idx)}
-            isStreaming={isStreaming && idx === messages.length - 1 && message.role === "assistant"}
-          />
+      <nav
+        aria-label="Prompt shortcuts"
+        className="absolute left-0 top-1/2 -translate-y-1/2 z-20 flex max-h-[70%] flex-col gap-0.5 overflow-y-auto py-2"
+      >
+        {items.map((item, index) => (
+          <button
+            key={item.id}
+            type="button"
+            aria-label={`Go to prompt ${index + 1}: ${item.title}`}
+            aria-current={index === activeIndex ? "location" : undefined}
+            title={item.title}
+            onClick={() => navigateTo(index)}
+            className="group flex h-4 w-7 items-center cursor-pointer"
+          >
+            <span className={cn(
+              "block h-0.5 rounded-r-full transition-all",
+              index === activeIndex
+                ? "w-5 bg-foreground"
+                : "w-3 bg-muted-foreground/60 group-hover:w-5 group-hover:bg-foreground",
+            )} />
+          </button>
         ))}
+      </nav>
+
+      {!open ? (
+        <button
+          type="button"
+          aria-label="Open prompt navigation"
+          title="Prompt navigation"
+          onClick={() => setOpen(true)}
+          className="absolute bottom-4 left-4 z-20 flex h-8 items-center gap-1.5 rounded-full border border-border bg-popover px-2.5 text-xs text-muted-foreground shadow-lg hover:text-foreground cursor-pointer"
+        >
+          <IconList className="size-4" />
+          <span>{items.length}</span>
+        </button>
+      ) : (
+        <section
+          aria-label="Prompt navigation"
+          className="absolute bottom-4 right-2 left-8 z-30 ml-auto flex max-h-[55%] max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-2xl"
+        >
+          <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-2">
+            <div className="flex-1 text-xs font-semibold">Prompt navigation</div>
+            <span className="mr-1 text-[10px] text-muted-foreground">{activeIndex + 1}/{items.length}</span>
+            <button
+              type="button"
+              aria-label="Previous prompt"
+              title="Previous prompt"
+              disabled={activeIndex === 0}
+              onClick={() => navigateTo(activeIndex - 1)}
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 cursor-pointer disabled:cursor-default"
+            >
+              <IconArrowUp className="size-4" />
+            </button>
+            <button
+              type="button"
+              aria-label="Next prompt"
+              title="Next prompt"
+              disabled={activeIndex === items.length - 1}
+              onClick={() => navigateTo(activeIndex + 1)}
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 cursor-pointer disabled:cursor-default"
+            >
+              <IconArrowDown className="size-4" />
+            </button>
+            <button
+              type="button"
+              aria-label="Close prompt navigation"
+              title="Close prompt navigation"
+              onClick={() => setOpen(false)}
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
+            >
+              <IconX className="size-4" />
+            </button>
+          </div>
+          <div className="overflow-y-auto p-1.5">
+            {items.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                data-prompt-navigation-index={index}
+                aria-label={`Go to prompt ${index + 1}: ${item.title}`}
+                aria-current={index === activeIndex ? "location" : undefined}
+                onClick={() => navigateTo(index)}
+                className={cn(
+                  "block w-full rounded-lg px-2.5 py-2 text-left hover:bg-muted cursor-pointer",
+                  index === activeIndex && "bg-muted",
+                )}
+              >
+                <div className="line-clamp-2 text-xs font-semibold leading-relaxed">{item.title}</div>
+                <div className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                  {item.preview || "No text response"}
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
+function MessageList() {
+  const messages = useChatStore((s) => s.messages);
+  const isStreaming = useChatStore((s) => s.isStreaming);
+  const promptItems = useMemo(() => getPromptNavigationItems(messages), [messages]);
+
+  return (
+    <>
+      <div>
+        {messages.map((message, idx) => {
+          const promptId = message.role === "user" ? `prompt-${message.id}` : undefined;
+          return (
+            <div key={message.id} id={promptId} className={promptId ? "scroll-mt-3" : undefined}>
+              <ChatMessage
+                message={message}
+                turnIndex={getForkTurnIndex(messages, idx)}
+                isStreaming={isStreaming && idx === messages.length - 1 && message.role === "assistant"}
+              />
+            </div>
+          );
+        })}
       </div>
+      <PromptNavigator items={promptItems} />
       <ScrollButton />
     </>
   );
@@ -56,7 +216,7 @@ export function ChatArea() {
 
   return (
     <div className="h-full relative">
-      <ScrollToBottom className="h-full" scrollViewClassName="h-full overflow-y-auto overflow-x-hidden" followButtonClassName="hidden" initialScrollBehavior="auto">
+      <ScrollToBottom className="h-full" scrollViewClassName="chat-scroll-view h-full overflow-y-auto overflow-x-hidden" followButtonClassName="hidden" initialScrollBehavior="auto">
         <MessageList />
       </ScrollToBottom>
     </div>

@@ -38,8 +38,9 @@ import {
   requiresManagedProviderLogin,
   useSettingsStore,
 } from "../webview-ui/src/stores/settings.store";
-import { useChatStore } from "../webview-ui/src/stores/chat.store";
+import { useChatStore, type ChatMessage as ChatMessageType } from "../webview-ui/src/stores/chat.store";
 import { CompactionCard } from "../webview-ui/src/components/CompactionCard";
+import { getPromptNavigationItems } from "../webview-ui/src/lib/prompt-navigation";
 import { Markdown } from "../webview-ui/src/components/Markdown";
 import { createStreamEventBuffer } from "../webview-ui/src/services/stream-event-buffer";
 
@@ -423,6 +424,27 @@ describe("Webview streaming rendering", () => {
     expect(emitted).toEqual([
       { type: "ContentPart", payload: { type: "text", text: "done" } },
       { type: "StepInterrupted", payload: {} },
+    ]);
+  });
+});
+
+describe("Webview prompt navigation", () => {
+  it("pairs each user prompt with the following assistant preview", () => {
+    const messages: ChatMessageType[] = [
+      { id: "user-one", role: "user", content: "<system>hidden context</system>  First\n\nprompt  ", timestamp: 1 },
+      { id: "assistant-one", role: "assistant", content: "First response\nwith details", timestamp: 2 },
+      {
+        id: "user-two",
+        role: "user",
+        content: [{ type: "image_url", image_url: { url: "data:image/png;base64,example" } }],
+        timestamp: 3,
+      },
+      { id: "assistant-two", role: "assistant", content: "", timestamp: 4 },
+    ];
+
+    expect(getPromptNavigationItems(messages)).toEqual([
+      { id: "user-one", title: "First prompt", preview: "First response with details" },
+      { id: "user-two", title: "Media prompt", preview: "" },
     ]);
   });
 });
