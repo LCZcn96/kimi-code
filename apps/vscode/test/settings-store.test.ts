@@ -40,6 +40,8 @@ import {
 } from "../webview-ui/src/stores/settings.store";
 import { useChatStore } from "../webview-ui/src/stores/chat.store";
 import { CompactionCard } from "../webview-ui/src/components/CompactionCard";
+import { Markdown } from "../webview-ui/src/components/Markdown";
+import { createStreamEventBuffer } from "../webview-ui/src/services/stream-event-buffer";
 
 const MODELS = [
   { id: "plain", name: "Plain", provider: "managed:kimi-code", capabilities: [] },
@@ -370,6 +372,58 @@ describe("Webview compaction status", () => {
     );
     expect(html).toContain("Compaction stopped");
     expect(html.match(/animate-spin/g)).toHaveLength(1);
+  });
+});
+
+describe("Webview streaming rendering", () => {
+  it("renders unfinished Markdown as lightweight plain text", () => {
+    const html = renderToStaticMarkup(
+      createElement(Markdown, {
+        content: "# Streaming heading",
+        streaming: true,
+      }),
+    );
+
+    expect(html).toContain("# Streaming heading");
+    expect(html).not.toContain("<h1");
+  });
+
+  it("coalesces adjacent text deltas on one scheduled render", () => {
+    const emitted: unknown[] = [];
+    const callbacks: Array<() => void> = [];
+    const buffer = createStreamEventBuffer(
+      (event) => emitted.push(event),
+      (callback) => {
+        callbacks.push(callback);
+        return () => undefined;
+      },
+    );
+
+    buffer.push({ type: "ContentPart", payload: { type: "text", text: "hello " }, _sessionId: "one" });
+    buffer.push({ type: "ContentPart", payload: { type: "text", text: "world" }, _sessionId: "one" });
+
+    expect(emitted).toEqual([]);
+    expect(callbacks).toHaveLength(1);
+    callbacks[0]();
+    expect(emitted).toEqual([
+      { type: "ContentPart", payload: { type: "text", text: "hello world" }, _sessionId: "one" },
+    ]);
+  });
+
+  it("flushes buffered text before an ordering boundary", () => {
+    const emitted: unknown[] = [];
+    const buffer = createStreamEventBuffer(
+      (event) => emitted.push(event),
+      () => () => undefined,
+    );
+
+    buffer.push({ type: "ContentPart", payload: { type: "text", text: "done" } });
+    buffer.push({ type: "StepInterrupted", payload: {} });
+
+    expect(emitted).toEqual([
+      { type: "ContentPart", payload: { type: "text", text: "done" } },
+      { type: "StepInterrupted", payload: {} },
+    ]);
   });
 });
 

@@ -51,7 +51,7 @@ function StepItemRenderer({ item }: { item: UIStepItem }) {
     case "thinking":
       return <ThinkingBlock content={item.content} finished={item.finished} />;
     case "text":
-      return <Markdown content={item.content} className="text-xs leading-relaxed" enableEnrichment={item.finished === true} />;
+      return <Markdown content={item.content} className="text-xs leading-relaxed" enableEnrichment={item.finished === true} streaming={item.finished !== true} />;
     case "tool_use":
       return <ToolCallCard call={item.call} result={item.result} subagentSteps={item.subagent_steps} />;
     case "compaction":
@@ -293,7 +293,7 @@ function AssistantMessage({ message, turnIndex, isStreaming }: { message: ChatMe
                   }
                   return <Fragment key={`normal-${gi}`}>{stepsContent}</Fragment>;
                 })}
-              {!hasSteps && displayContent && <Markdown content={displayContent} className="text-xs leading-relaxed @[420px]:pl-5" enableEnrichment={!isStreaming} />}
+              {!hasSteps && displayContent && <Markdown content={displayContent} className="text-xs leading-relaxed @[420px]:pl-5" enableEnrichment={!isStreaming} streaming={isStreaming} />}
               {(images.length > 0 || videos.length > 0) && (
                 <div className="@[420px]:pl-5">
                   <MessageMedia images={images} videos={videos} onPreview={setPreviewMedia} />

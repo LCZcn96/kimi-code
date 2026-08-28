@@ -12,6 +12,7 @@ import { parseSegments, parseColorSegments, extractPaths, checkFilesExist, hasCo
 import { CopyButton } from "@/components/CopyButton";
 import { MediaPreviewModal, StreamImagePreview, ImageLoadFail } from "@/components/MediaPreviewModal";
 import { getMediaTypeFromSrc } from "@/lib/media-utils";
+import { cn } from "@/lib/utils";
 import { bridge } from "@/services";
 
 interface MarkdownProps {
@@ -19,6 +20,7 @@ interface MarkdownProps {
   className?: string;
   enableEnrichment?: boolean;
   enableLocalImageRender?: boolean;
+  streaming?: boolean;
 }
 
 function useIsDark(): boolean {
@@ -178,7 +180,7 @@ function unwrapParagraphs(children: React.ReactNode): React.ReactNode {
   });
 }
 
-export const Markdown = memo(function Markdown({ content, className, enableEnrichment = true, enableLocalImageRender = true }: MarkdownProps) {
+const RichMarkdown = memo(function RichMarkdown({ content, className, enableEnrichment = true, enableLocalImageRender = true }: MarkdownProps) {
   const isDark = useIsDark();
   const [fileMap, setFileMap] = useState<Record<string, boolean>>({});
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -273,4 +275,13 @@ export const Markdown = memo(function Markdown({ content, className, enableEnric
       <MediaPreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
     </div>
   );
+});
+
+export const Markdown = memo(function Markdown({ streaming = false, ...props }: MarkdownProps) {
+  if (streaming) {
+    return props.content
+      ? <div className={cn(props.className, "whitespace-pre-wrap break-words")}>{props.content}</div>
+      : null;
+  }
+  return <RichMarkdown {...props} />;
 });

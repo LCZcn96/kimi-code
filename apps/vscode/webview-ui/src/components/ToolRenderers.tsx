@@ -312,7 +312,7 @@ function SubagentStepItemRenderer({ item }: { item: UIStepItem }) {
     return <ThinkingBlock content={item.content} finished={item.finished} compact />;
   }
   if (item.type === "text") {
-    return <Markdown content={item.content} className="text-[0.75rem] leading-relaxed" enableEnrichment={item.finished} />;
+    return <Markdown content={item.content} className="text-[0.75rem] leading-relaxed" enableEnrichment={item.finished} streaming={item.finished !== true} />;
   }
   if (item.type === "tool_use") {
     return <ToolCallCard call={item.call} result={item.result} subagentSteps={item.subagent_steps} />;

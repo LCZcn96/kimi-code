@@ -10,22 +10,20 @@ import { LoginScreen } from "./components/LoginScreen";
 import { Toaster, toast } from "./components/ui/sonner";
 import { useChatStore, useSettingsStore } from "./stores";
 import { bridge, Events } from "./services";
+import { createStreamEventBuffer } from "./services/stream-event-buffer";
 import { useAppInit, resolveAppView } from "./hooks/useAppInit";
 import { isPreflightError } from "shared/errors";
 import type { UIStreamEvent, StreamError, ExtensionConfig } from "shared/types";
 import "./styles/index.css";
 
 function MainContent({ onAuthAction }: { onAuthAction: () => void }) {
-  const { processEvent, startNewConversation, sessionId } = useChatStore();
+  const processEvent = useChatStore((state) => state.processEvent);
+  const startNewConversation = useChatStore((state) => state.startNewConversation);
+  const sessionId = useChatStore((state) => state.sessionId);
   const { setMCPServers, setExtensionConfig, extensionConfig } = useSettingsStore();
 
   useEffect(() => {
-    return bridge.on(Events.StreamEvent, (event: UIStreamEvent) => {
-      // 只有当前已有 session 时才过滤，确保 session_start 能正常处理
-      if (sessionId && "_sessionId" in event && event._sessionId && event._sessionId !== sessionId) {
-        console.log("Ignored stream event from another session:", event._sessionId);
-        return;
-      }
+    const streamEvents = createStreamEventBuffer((event) => {
       processEvent(event);
       if (event.type === "error") {
         const streamError = event as StreamError;
@@ -34,6 +32,18 @@ function MainContent({ onAuthAction }: { onAuthAction: () => void }) {
         }
       }
     });
+    const unsubscribe = bridge.on(Events.StreamEvent, (event: UIStreamEvent) => {
+      // 只有当前已有 session 时才过滤，确保 session_start 能正常处理
+      if (sessionId && "_sessionId" in event && event._sessionId && event._sessionId !== sessionId) {
+        console.log("Ignored stream event from another session:", event._sessionId);
+        return;
+      }
+      streamEvents.push(event);
+    });
+    return () => {
+      unsubscribe();
+      streamEvents.dispose();
+    };
   }, [processEvent, sessionId]);
 
   useEffect(() => {

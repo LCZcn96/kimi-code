@@ -58,6 +58,7 @@ export function ThinkingBlock({ content, finished, compact }: ThinkingBlockProps
           content={content}
           className={cn("border-t border-zinc-200/50 dark:border-zinc-700/50", compact ? "py-2 px-2 text-[0.75rem]" : "py-3 px-2 pl-3.5 text-xs")}
           enableEnrichment={finished}
+          streaming={isStreaming}
         />
       )}
     </div>
