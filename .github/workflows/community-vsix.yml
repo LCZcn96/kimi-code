@@ -86,7 +86,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $assets = Get-ChildItem apps/vscode/artifacts/vsix -File | Select-Object -ExpandProperty FullName
+          $version = $env:GITHUB_REF_NAME -replace '^community-v', ''
           gh release create $env:GITHUB_REF_NAME @assets `
             --verify-tag `
-            --title "Kimi Code Community $env:GITHUB_REF_NAME (Unofficial)" `
+            --title "Kimi Code Community $version (Unofficial)" `
             --generate-notes
