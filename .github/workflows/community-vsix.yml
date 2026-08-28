@@ -3,6 +3,8 @@ name: Community VSIX
 on:
   workflow_dispatch:
   push:
+    branches:
+      - community
     tags:
       - "community-v*"
 
