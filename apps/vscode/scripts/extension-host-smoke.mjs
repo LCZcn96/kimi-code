@@ -111,15 +111,15 @@ export async function runExtensionHostSmoke(options = {}) {
 }
 
 async function runExtensionTests(options) {
-  const electronRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
-  delete process.env.ELECTRON_RUN_AS_NODE;
+  const electronRunAsNode = process.env["ELECTRON_RUN_AS_NODE"];
+  delete process.env["ELECTRON_RUN_AS_NODE"];
   try {
     return await runTests(options);
   } finally {
     if (electronRunAsNode === undefined) {
-      delete process.env.ELECTRON_RUN_AS_NODE;
+      delete process.env["ELECTRON_RUN_AS_NODE"];
     } else {
-      process.env.ELECTRON_RUN_AS_NODE = electronRunAsNode;
+      process.env["ELECTRON_RUN_AS_NODE"] = electronRunAsNode;
     }
   }
 }

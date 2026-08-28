@@ -78,10 +78,10 @@ describe('installed VSIX Extension Host smoke', () => {
 
   it('clears the parent Extension Host Node mode only while launching VS Code', async () => {
     const fixture = await makeFixture();
-    const originalValue = process.env.ELECTRON_RUN_AS_NODE;
-    process.env.ELECTRON_RUN_AS_NODE = '1';
+    const originalValue = process.env['ELECTRON_RUN_AS_NODE'];
+    process.env['ELECTRON_RUN_AS_NODE'] = '1';
     vscodeTest.runTests.mockImplementationOnce(async (options) => {
-      expect(process.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+      expect(process.env['ELECTRON_RUN_AS_NODE']).toBeUndefined();
       await writeFile(
         options.extensionTestsEnv.KIMI_VSCODE_SMOKE_REPORT,
         JSON.stringify({ vscode: options.version }),
@@ -95,12 +95,12 @@ describe('installed VSIX Extension Host smoke', () => {
         vsixPath: fixture.vsixPath,
         cachePath: fixture.cachePath,
       });
-      expect(process.env.ELECTRON_RUN_AS_NODE).toBe('1');
+      expect(process.env['ELECTRON_RUN_AS_NODE']).toBe('1');
     } finally {
       if (originalValue === undefined) {
-        delete process.env.ELECTRON_RUN_AS_NODE;
+        delete process.env['ELECTRON_RUN_AS_NODE'];
       } else {
-        process.env.ELECTRON_RUN_AS_NODE = originalValue;
+        process.env['ELECTRON_RUN_AS_NODE'] = originalValue;
       }
     }
   });
