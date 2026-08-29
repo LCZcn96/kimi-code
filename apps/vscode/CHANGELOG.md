@@ -1,5 +1,14 @@
 # Changelog
 
+## Community build 0.3.0
+
+### Added
+
+- Added conversation undo buttons below user prompt bubbles. Undoing removes
+  the selected prompt and later turns from the model context, restores the
+  selected text and media to the composer, and deliberately leaves file
+  changes untouched.
+
 ## Community build 0.2.0
 
 ### Added

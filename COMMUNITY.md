@@ -9,7 +9,7 @@ Moonshot AI. The upstream project remains
 
 The community release changes and distributes only `apps/vscode`. It does not
 publish replacement CLI, SDK, npm, Marketplace, or Open VSX packages. Version
-0.2.0 is based on upstream VS Code extension 0.7.3 at commit `d8317d81e` and
+0.3.0 is based on upstream VS Code extension 0.7.3 at commit `d8317d81e` and
 contains:
 
 - the long-running stream timeout fix proposed in upstream PR
@@ -19,7 +19,11 @@ contains:
 - lower streaming resize cost through event coalescing and a lightweight
   unfinished-Markdown path; and
 - prompt navigation with a compact outline, previous/next actions, active-item
-  tracking, and clickable shortcut markers along the left edge of the chat.
+  tracking, and clickable shortcut markers along the left edge of the chat;
+  and
+- conversation undo from user prompt bubbles, including prompt/media restore,
+  compaction and cleared-context boundaries, and an explicit guarantee that
+  undo does not revert files.
 
 The packaged extension ID is `lczcn96.kimi-code`. It deliberately keeps the
 upstream internal `kimi.*` identifiers so that sessions, settings, and behavior
@@ -53,6 +57,7 @@ git switch community
 git merge --no-ff origin/main
 pnpm install --frozen-lockfile
 pnpm --dir apps/vscode exec vitest run --config vitest.config.ts `
+  test/bridge-handler.test.ts test/session-runtime.test.ts `
   test/settings-store.test.ts test/event-adapter.test.ts `
   test/replay-adapter.test.ts test/vsix-package.test.ts
 pnpm --dir apps/vscode typecheck
