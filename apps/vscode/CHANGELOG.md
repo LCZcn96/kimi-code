@@ -1,5 +1,16 @@
 # Changelog
 
+## Community build 0.4.1
+
+### Added
+
+- Added a local timestamp to every prompt-navigation entry.
+
+### Changed
+
+- Moved the prompt-navigation launcher to the right without overlapping the
+  scroll control, and centered the expanded panel at wide and narrow widths.
+
 ## Community build 0.4.0
 
 ### Added

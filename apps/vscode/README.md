@@ -15,7 +15,8 @@ and features:
 - Reduce resize stalls during streaming by coalescing text deltas and deferring
   rich Markdown parsing until a text or thinking block has finished.
 - Navigate long conversations through a compact prompt/response outline,
-  previous/next controls, and scroll-aware shortcut markers on the left edge.
+  timestamped entries, previous/next controls, and scroll-aware shortcut
+  markers on the left edge.
 - Undo from any available user prompt with the arrow below its bubble; the
   selected prompt is restored to the composer, with an optional conflict-safe
   rollback for file changes made through Kimi Write/Edit tools.
