@@ -1,5 +1,18 @@
 # Changelog
 
+## Community build 0.4.0
+
+### Added
+
+- Added an opt-in file rollback choice to conversation undo. The extension
+  records per-turn snapshots for Kimi Write/Edit tools, preserves later or
+  interleaved user edits as conflicts, and keeps files unchanged by default.
+
+### Fixed
+
+- Kept conversation undo and file snapshots aligned when a running turn
+  contains one or more steered follow-up inputs.
+
 ## Community build 0.3.0
 
 ### Added

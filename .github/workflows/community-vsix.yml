@@ -39,7 +39,8 @@ jobs:
       - name: Test downstream regressions
         run: >-
           pnpm --dir apps/vscode exec vitest run --config vitest.config.ts
-          test/bridge-handler.test.ts test/session-runtime.test.ts
+          test/baseline.manager.test.ts test/bridge-handler.test.ts
+          test/fork-turn-index.test.ts test/session-runtime.test.ts
           test/settings-store.test.ts test/event-adapter.test.ts
           test/replay-adapter.test.ts test/vsix-package.test.ts
 

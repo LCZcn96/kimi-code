@@ -17,8 +17,8 @@ and features:
 - Navigate long conversations through a compact prompt/response outline,
   previous/next controls, and scroll-aware shortcut markers on the left edge.
 - Undo from any available user prompt with the arrow below its bubble; the
-  selected prompt is restored to the composer while file changes remain
-  untouched.
+  selected prompt is restored to the composer, with an optional conflict-safe
+  rollback for file changes made through Kimi Write/Edit tools.
 
 ## Features
 
@@ -28,7 +28,7 @@ and features:
 - **Native editor integration**: Review AI-proposed changes directly in VS Code's diff viewer
 - **MCP support**: Extend capabilities with Model Context Protocol servers
 - **Slash commands**: Quick actions like `/init` to analyze your project and `/compact` to manage context
-- **Conversation undo**: Return the model context to an earlier prompt without reverting files
+- **Conversation undo**: Return the model context to an earlier prompt and optionally restore tracked file changes
 
 ## Install
 
