@@ -53,10 +53,10 @@ export function InputArea({ onAuthAction }: InputAreaProps) {
   const [cursorPos, setCursorPos] = useState(0);
   const [previewMedia, setPreviewMedia] = useState<string | null>(null);
 
-  const { isStreaming, sendMessage, abort, draftMedia, removeDraftMedia, hasProcessingMedia, getMediaInConversation, pendingInput, planMode, messages } = useChatStore();
+  const { isStreaming, isUndoing, sendMessage, abort, draftMedia, removeDraftMedia, hasProcessingMedia, getMediaInConversation, pendingInput, planMode, messages } = useChatStore();
   const { currentModel, thinkingEffort, updateModel, toggleThinking, selectThinkingEffort, models, extensionConfig, getCurrentThinkingMode } = useSettingsStore();
 
-  const isProcessing = hasProcessingMedia();
+  const isProcessing = hasProcessingMedia() || isUndoing;
   const thinkingMode = getCurrentThinkingMode();
   // A switch from a non-empty conversation resends the accumulated context,
   // losing the prompt cache — surface the cost note in the switcher dropdowns.
@@ -397,7 +397,7 @@ export function InputArea({ onAuthAction }: InputAreaProps) {
             onKeyDown={handleKeyDown}
             onSelect={handleSelect}
             onPaste={handlePaste}
-            placeholder={isStreaming ? "Add a follow-up..." : "Ask Kimi Code... (/ commands · @ files · Alt+K code)"}
+            placeholder={isUndoing ? "Undoing conversation..." : isStreaming ? "Add a follow-up..." : "Ask Kimi Code... (/ commands · @ files · Alt+K code)"}
             className={cn(
               "w-full min-h-12 max-h-35 px-2.5 py-1.5 text-xs leading-relaxed",
               "bg-transparent resize-none outline-none border-none overflow-y-auto",
@@ -415,7 +415,7 @@ export function InputArea({ onAuthAction }: InputAreaProps) {
                         variant="ghost"
                         size="xs"
                         className="gap-0.5 text-accent-foreground border-0! h-6 px-1.5 min-w-0 max-w-[calc(100%-4rem)]"
-                        disabled={isStreaming || !hasModels}
+                        disabled={isStreaming || isUndoing || !hasModels}
                       >
                         {/* Name stays readable longest: the dimmed provider
                             suffix carries a higher shrink factor so space
@@ -469,7 +469,7 @@ export function InputArea({ onAuthAction }: InputAreaProps) {
                 effort={thinkingEffort}
                 efforts={currentModelConfig?.support_efforts}
                 alwaysOn={currentModelConfig?.capabilities.includes("always_thinking")}
-                disabled={isStreaming}
+                disabled={isStreaming || isUndoing}
                 cacheNote={hasConversationHistory ? SWITCH_CACHE_NOTE : undefined}
                 onToggle={toggleThinking}
                 onSelectEffort={selectThinkingEffort}

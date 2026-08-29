@@ -193,6 +193,10 @@ class Bridge {
     return this.call<{ aborted: boolean }>(Methods.AbortChat);
   }
 
+  undoConversation(count: number) {
+    return this.call<{ ok: boolean }>(Methods.UndoConversation, { count });
+  }
+
   resetSession() {
     return this.call<{ ok: boolean }>(Methods.ResetSession);
   }

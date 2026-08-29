@@ -34,6 +34,7 @@ export const Methods = {
 
   StreamChat: "streamChat",
   AbortChat: "abortChat",
+  UndoConversation: "undoConversation",
   ResetSession: "resetSession",
   SetPlanMode: "setPlanMode",
   SteerChat: "steerChat",
@@ -169,6 +170,10 @@ function validateParams(method: RpcMethod, params: unknown): boolean {
       return hasNonEmptyString(params, "name");
     case Methods.StreamChat:
       return isStreamChatParams(params);
+    case Methods.UndoConversation:
+      return isPlainObject(params)
+        && Number.isSafeInteger(params["count"])
+        && (params["count"] as number) > 0;
     case Methods.RespondApproval:
       return isPlainObject(params)
         && isNonEmptyString(params["requestId"])

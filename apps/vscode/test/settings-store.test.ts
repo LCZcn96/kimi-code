@@ -14,6 +14,7 @@ const boundary = vi.hoisted(() => ({
   saveConfig: vi.fn(),
   streamChat: vi.fn(),
   abortChat: vi.fn(),
+  undoConversation: vi.fn(),
   trackFiles: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("@/services", () => ({
     saveConfig: boundary.saveConfig,
     streamChat: boundary.streamChat,
     abortChat: boundary.abortChat,
+    undoConversation: boundary.undoConversation,
     trackFiles: boundary.trackFiles,
   },
 }));
@@ -40,6 +42,7 @@ import {
 } from "../webview-ui/src/stores/settings.store";
 import { useChatStore, type ChatMessage as ChatMessageType } from "../webview-ui/src/stores/chat.store";
 import { CompactionCard } from "../webview-ui/src/components/CompactionCard";
+import { getConversationUndoCounts } from "../webview-ui/src/lib/conversation-undo";
 import { getPromptNavigationItems } from "../webview-ui/src/lib/prompt-navigation";
 import { Markdown } from "../webview-ui/src/components/Markdown";
 import { createStreamEventBuffer } from "../webview-ui/src/services/stream-event-buffer";
@@ -63,6 +66,8 @@ beforeEach(() => {
   boundary.streamChat.mockResolvedValue({ done: false });
   boundary.abortChat.mockReset();
   boundary.abortChat.mockResolvedValue({ aborted: true });
+  boundary.undoConversation.mockReset();
+  boundary.undoConversation.mockResolvedValue({ ok: true });
   boundary.trackFiles.mockReset();
   boundary.toastError.mockReset();
   boundary.toastWarning.mockReset();
@@ -71,6 +76,7 @@ beforeEach(() => {
     sessionId: null,
     messages: [],
     isStreaming: false,
+    isUndoing: false,
     isCompacting: false,
     handshakeReceived: false,
     draftMedia: [],
@@ -327,6 +333,114 @@ describe("Webview chat error recovery", () => {
       message: "Service temporarily unavailable.",
       detail: "HTTP 400: function name is invalid",
     });
+  });
+});
+
+describe("Webview conversation undo", () => {
+  it("offers undo only after the latest completed compaction or clear boundary", () => {
+    const beforeCompact: ChatMessageType = {
+      id: "before-compact",
+      role: "user",
+      content: "Before compact",
+      timestamp: 1,
+    };
+    const completedCompact: ChatMessageType = {
+      id: "compact-result",
+      role: "assistant",
+      content: "",
+      timestamp: 2,
+      forkable: false,
+      steps: [{ n: 1, items: [{ type: "compaction", status: "completed" }] }],
+    };
+    const afterCompact: ChatMessageType = {
+      id: "after-compact",
+      role: "user",
+      content: "After compact",
+      timestamp: 3,
+    };
+
+    expect([...getConversationUndoCounts([beforeCompact, completedCompact, afterCompact])]).toEqual([
+      ["after-compact", 1],
+    ]);
+
+    const clear: ChatMessageType = {
+      id: "clear",
+      role: "user",
+      content: "/clear",
+      timestamp: 4,
+      forkable: false,
+    };
+    const afterClear: ChatMessageType = {
+      id: "after-clear",
+      role: "user",
+      content: "After clear",
+      timestamp: 5,
+    };
+    expect([...getConversationUndoCounts([afterCompact, clear, afterClear])]).toEqual([
+      ["after-clear", 1],
+    ]);
+  });
+
+  it("removes the selected prompt suffix and restores its text and media", () => {
+    useChatStore.setState({
+      isUndoing: true,
+      queue: [{ id: "queued", content: "stale follow-up", model: "plain" }],
+      messages: [
+        { id: "user-one", role: "user", content: "First prompt", timestamp: 1 },
+        { id: "assistant-one", role: "assistant", content: "First response", timestamp: 2 },
+        {
+          id: "user-two",
+          role: "user",
+          content: [
+            { type: "text", text: "Second prompt" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,second", id: "image-two" } },
+          ],
+          timestamp: 3,
+        },
+        { id: "assistant-two", role: "assistant", content: "Second response", timestamp: 4 },
+        { id: "host-command", role: "user", content: "/plan on", timestamp: 5, forkable: false },
+        { id: "host-result", role: "assistant", content: "Plan mode ON.", timestamp: 6, forkable: false },
+        { id: "user-three", role: "user", content: "Third prompt", timestamp: 7 },
+        { id: "assistant-three", role: "assistant", content: "Third response", timestamp: 8 },
+      ],
+    });
+
+    useChatStore.getState().processEvent({
+      type: "conversation_undo",
+      payload: { count: 2 },
+    });
+
+    expect(useChatStore.getState()).toMatchObject({
+      isUndoing: false,
+      messages: [
+        { id: "user-one" },
+        { id: "assistant-one" },
+      ],
+      pendingInput: {
+        content: [
+          { type: "text", text: "Second prompt" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,second", id: "image-two" } },
+        ],
+        model: "plain",
+      },
+      draftMedia: [{ id: "image-two", dataUri: "data:image/png;base64,second" }],
+      queue: [],
+    });
+  });
+
+  it("keeps the composer locked until the host finishes undoing", async () => {
+    let finishUndo!: (result: { ok: boolean }) => void;
+    boundary.undoConversation.mockReturnValue(new Promise((resolve) => {
+      finishUndo = resolve;
+    }));
+
+    const undo = useChatStore.getState().undoConversation(2);
+    expect(useChatStore.getState().isUndoing).toBe(true);
+    expect(boundary.undoConversation).toHaveBeenCalledWith(2);
+
+    finishUndo({ ok: true });
+    await undo;
+    expect(useChatStore.getState().isUndoing).toBe(false);
   });
 });
 

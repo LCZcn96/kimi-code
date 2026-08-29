@@ -6,6 +6,7 @@ import { WelcomeScreen } from "./WelcomeScreen";
 import { useChatStore } from "@/stores";
 import { cn } from "@/lib/utils";
 import { getPromptNavigationItems, type PromptNavigationItem } from "@/lib/prompt-navigation";
+import { getConversationUndoCounts } from "@/lib/conversation-undo";
 import { getForkTurnIndex } from "shared/fork-turn-index";
 
 const findPromptAnchor = (id: string) => document.querySelector<HTMLElement>(`#${CSS.escape(`prompt-${id}`)}`);
@@ -179,7 +180,9 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
 function MessageList() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
+  const isUndoing = useChatStore((s) => s.isUndoing);
   const promptItems = useMemo(() => getPromptNavigationItems(messages), [messages]);
+  const undoCounts = useMemo(() => getConversationUndoCounts(messages), [messages]);
 
   return (
     <>
@@ -192,6 +195,8 @@ function MessageList() {
                 message={message}
                 turnIndex={getForkTurnIndex(messages, idx)}
                 isStreaming={isStreaming && idx === messages.length - 1 && message.role === "assistant"}
+                undoCount={undoCounts.get(message.id)}
+                conversationBusy={isStreaming || isUndoing}
               />
             </div>
           );

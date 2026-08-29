@@ -153,6 +153,13 @@ const abortChat: Handler<void, { aborted: boolean }> = async (_, ctx) => {
   return { aborted: true };
 };
 
+const undoConversation: Handler<{ count: number }, { ok: boolean }> = async (params, ctx) => {
+  const runtime = ctx.getSession();
+  if (runtime === undefined) return { ok: false };
+  await runtime.undoConversation(params.count);
+  return { ok: true };
+};
+
 const respondApproval: Handler<RespondApprovalParams, { ok: boolean }> = async (params, ctx) => {
   return { ok: ctx.getSession()?.respondApproval(params.requestId, params.response) ?? false };
 };
@@ -187,6 +194,7 @@ const resetSession: Handler<void, { ok: boolean }> = async (_, ctx) => {
 export const chatHandlers: Record<string, Handler<any, any>> = {
   [Methods.StreamChat]: streamChat,
   [Methods.AbortChat]: abortChat,
+  [Methods.UndoConversation]: undoConversation,
   [Methods.RespondApproval]: respondApproval,
   [Methods.RespondQuestion]: respondQuestion,
   [Methods.SetPlanMode]: setPlanMode,

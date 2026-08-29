@@ -1,5 +1,5 @@
 import { useState, Fragment, memo } from "react";
-import { IconLoader3, IconGitFork } from "@tabler/icons-react";
+import { IconArrowBackUp, IconLoader3, IconGitFork } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import { Content } from "@/lib/content";
 import { Markdown } from "./Markdown";
@@ -24,6 +24,8 @@ interface ChatMessageProps {
   /** 0-indexed turn number for this message */
   turnIndex?: number;
   isStreaming?: boolean;
+  undoCount?: number;
+  conversationBusy?: boolean;
 }
 
 function ThinkingIndicator() {
@@ -210,26 +212,79 @@ function ForkButton({ turnIndex, className }: ForkButtonProps) {
   );
 }
 
-function UserMessage({ message }: { message: ChatMessageType }) {
+function UserMessage({
+  message,
+  undoCount,
+  conversationBusy = false,
+}: {
+  message: ChatMessageType;
+  undoCount?: number;
+  conversationBusy?: boolean;
+}) {
   const [previewMedia, setPreviewMedia] = useState<string | null>(null);
+  const [showUndoConfirm, setShowUndoConfirm] = useState(false);
+  const undoConversation = useChatStore((s) => s.undoConversation);
   const displayContent = Content.getText(message.content);
   const images = Content.getImages(message.content);
   const videos = Content.getVideos(message.content);
 
+  const handleUndo = async () => {
+    if (undoCount === undefined) return;
+    try {
+      await undoConversation(undoCount);
+      setShowUndoConfirm(false);
+    } catch (error) {
+      toast.error(`Failed to undo conversation: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const laterPromptCount = Math.max(0, (undoCount ?? 1) - 1);
+  const undoDescription = laterPromptCount === 0
+    ? "This removes this prompt and its response from the conversation context."
+    : `This removes this prompt and ${String(laterPromptCount)} later ${laterPromptCount === 1 ? "prompt" : "prompts"} from the conversation context.`;
+
   return (
-    <div className="px-3 pt-3 pb-1 flex justify-end">
-      <div className={cn("max-w-[85%] px-3.5 py-1.5 rounded-2xl rounded-br-md", "bg-zinc-100 dark:bg-zinc-800", "text-foreground")}>
-        {displayContent && (
-          // FIX: removed whitespace-pre-wrap — it conflicted with ReactMarkdown's
-          // block-level elements (<p>, <ol>, <li>), doubling vertical spacing.
-          // ReactMarkdown already handles paragraph breaks from \n\n.
-          <div className="text-xs leading-relaxed wrap-break-word">
-            <Markdown content={displayContent} enableEnrichment enableLocalImageRender={false} />
-          </div>
+    <div className="group/user px-3 pt-3 pb-1 flex justify-end">
+      <div className="flex max-w-[85%] flex-col items-end">
+        <div className={cn("max-w-full px-3.5 py-1.5 rounded-2xl rounded-br-md", "bg-zinc-100 dark:bg-zinc-800", "text-foreground")}>
+          {displayContent && (
+            // FIX: removed whitespace-pre-wrap — it conflicted with ReactMarkdown's
+            // block-level elements (<p>, <ol>, <li>), doubling vertical spacing.
+            // ReactMarkdown already handles paragraph breaks from \n\n.
+            <div className="text-xs leading-relaxed wrap-break-word">
+              <Markdown content={displayContent} enableEnrichment enableLocalImageRender={false} />
+            </div>
+          )}
+          <MessageMedia images={images} videos={videos} onPreview={setPreviewMedia} />
+        </div>
+        {undoCount !== undefined && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="mt-0.5 h-5 w-5 border-0! text-muted-foreground opacity-60 transition-opacity hover:bg-zinc-200 hover:text-foreground hover:opacity-100 group-hover/user:opacity-100 dark:hover:bg-zinc-800 cursor-pointer"
+            onClick={() => {
+              setShowUndoConfirm(true);
+            }}
+            disabled={conversationBusy}
+            aria-label="Undo conversation to this prompt"
+            title="Undo conversation to this prompt"
+          >
+            <IconArrowBackUp className="size-3.5" />
+          </Button>
         )}
-        <MessageMedia images={images} videos={videos} onPreview={setPreviewMedia} />
       </div>
       <MediaPreviewModal src={previewMedia} onClose={() => setPreviewMedia(null)} />
+      <StreamingConfirmDialog
+        open={showUndoConfirm}
+        onOpenChange={setShowUndoConfirm}
+        title="Undo Conversation"
+        description={`${undoDescription} The selected prompt will be restored to the input. File changes are not reverted.`}
+        confirmLabel="Undo"
+        onConfirm={() => { void handleUndo(); }}
+        confirmLoading={conversationBusy}
+        confirmDisabled={conversationBusy}
+        cancelDisabled={conversationBusy}
+      />
     </div>
   );
 }
@@ -332,9 +387,9 @@ function hasMessageContent(message: ChatMessageType): boolean {
   return message.steps?.some((s) => s.items.length > 0) ?? false;
 }
 
-export const ChatMessage = memo(function ChatMessage({ message, turnIndex, isStreaming }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({ message, turnIndex, isStreaming, undoCount, conversationBusy }: ChatMessageProps) {
   if (message.role === "user") {
-    return <UserMessage message={message} />;
+    return <UserMessage message={message} undoCount={undoCount} conversationBusy={conversationBusy} />;
   }
   return <AssistantMessage message={message} turnIndex={turnIndex} isStreaming={isStreaming} />;
 });

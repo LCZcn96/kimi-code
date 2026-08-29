@@ -93,6 +93,7 @@ export interface ChatState {
   sessionId: string | null;
   messages: ChatMessage[];
   isStreaming: boolean;
+  isUndoing: boolean;
   isCompacting: boolean;
   handshakeReceived: boolean;
   draftMedia: DraftMediaItem[];
@@ -105,6 +106,7 @@ export interface ChatState {
   planMode: boolean;
 
   sendMessage: (text: string) => void;
+  undoConversation: (count: number) => Promise<void>;
   retryLastMessage: () => void;
   processEvent: (event: UIStreamEvent) => void;
   loadSession: (sessionId: string, events: UIStreamEvent[]) => Promise<void>;
@@ -179,6 +181,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessionId: null,
   messages: [],
   isStreaming: false,
+  isUndoing: false,
   isCompacting: false,
   handshakeReceived: false,
   draftMedia: [],
@@ -191,8 +194,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   planMode: false,
 
   sendMessage: (text) => {
-    const { draftMedia, isStreaming } = get();
+    const { draftMedia, isStreaming, isUndoing } = get();
     const { currentModel } = useSettingsStore.getState();
+
+    if (isUndoing) {
+      toast.warning("Wait for the conversation undo to finish.");
+      return;
+    }
 
     const readyMedia = draftMedia.filter((m) => m.dataUri).map((m) => m.dataUri!);
     const content = readyMedia.length > 0 ? Content.build(text, readyMedia) : text;
@@ -221,6 +229,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     useApprovalStore.getState().clearRequests();
 
     doSend(get(), content, currentModel);
+  },
+
+  undoConversation: async (count) => {
+    const { isStreaming, isUndoing } = get();
+    if (isStreaming) {
+      throw new Error("Stop the current response before undoing the conversation.");
+    }
+    if (isUndoing) {
+      throw new Error("A conversation undo is already in progress.");
+    }
+
+    set({ isUndoing: true });
+    try {
+      const result = await bridge.undoConversation(count);
+      if (!result.ok) {
+        throw new Error("There is no active conversation to undo.");
+      }
+    } finally {
+      set({ isUndoing: false });
+    }
   },
 
   retryLastMessage: () => {
@@ -295,6 +323,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sessionId,
       messages: [],
       isStreaming: false,
+      isUndoing: false,
       isCompacting: false,
       handshakeReceived: false,
       draftMedia: [],
@@ -327,6 +356,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
         draft.isStreaming = false;
+        draft.isUndoing = false;
         draft.isCompacting = false;
         draft.pendingQuestion = null;
       }),
@@ -349,6 +379,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sessionId: null,
       messages: [],
       isStreaming: false,
+      isUndoing: false,
       isCompacting: false,
       handshakeReceived: false,
       draftMedia: [],

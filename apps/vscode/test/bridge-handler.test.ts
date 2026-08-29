@@ -190,6 +190,38 @@ describe("Webview RPC boundary (validates requests before host dispatch)", () =>
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it("undoes the requested number of prompts in the view's runtime", async () => {
+    const undoConversation = vi.fn(async () => undefined);
+    vi.spyOn(bridge.runtime, "getSessionForView").mockReturnValue({ undoConversation } as never);
+
+    const result = await bridge.handle(
+      { id: "rpc-undo", method: Methods.UndoConversation, params: { count: 2 } },
+      "view-1",
+    );
+
+    expect(result).toEqual({ id: "rpc-undo", result: { ok: true } });
+    expect(undoConversation).toHaveBeenCalledWith(2);
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects the invalid undo count %s before dispatch",
+    async (count) => {
+      const undoConversation = vi.fn(async () => undefined);
+      vi.spyOn(bridge.runtime, "getSessionForView").mockReturnValue({ undoConversation } as never);
+
+      const result = await bridge.handle(
+        { id: "rpc-undo", method: Methods.UndoConversation, params: { count } },
+        "view-1",
+      );
+
+      expect(result).toEqual({
+        id: "rpc-undo",
+        error: "Invalid bridge params for method: undoConversation",
+      });
+      expect(undoConversation).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["missingMethod", "toString", "constructor", "__proto__"])(
     "does not dispatch the unknown or prototype method %s",
     async (method) => {

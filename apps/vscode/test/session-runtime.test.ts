@@ -42,6 +42,7 @@ interface FakeSessionBoundary {
   readonly handlerInstallations: { approval: number; question: number };
   readonly metadataUpdates: JsonObject[];
   readonly setPermissions: PermissionMode[];
+  readonly undoCounts: number[];
   readonly subscriptionCount: () => number;
   readonly cancelCount: () => number;
   readonly cancelCompactionCount: () => number;
@@ -62,6 +63,7 @@ function createFakeSession(): FakeSessionBoundary {
   const handlerInstallations = { approval: 0, question: 0 };
   const metadataUpdates: JsonObject[] = [];
   const setPermissions: PermissionMode[] = [];
+  const undoCounts: number[] = [];
   let approvalHandler: ApprovalHandler | undefined;
   let questionHandler: QuestionHandler | undefined;
   let nextPromptError: Error | undefined;
@@ -115,6 +117,9 @@ function createFakeSession(): FakeSessionBoundary {
     async cancelCompaction() {
       compactionCancellations += 1;
     },
+    async undoHistory(count: number) {
+      undoCounts.push(count);
+    },
     async getStatus() {
       return {
         thinkingEffort: "off",
@@ -149,6 +154,7 @@ function createFakeSession(): FakeSessionBoundary {
     handlerInstallations,
     metadataUpdates,
     setPermissions,
+    undoCounts,
     subscriptionCount: () => subscriptions,
     cancelCount: () => cancellations,
     cancelCompactionCount: () => compactionCancellations,
@@ -260,6 +266,34 @@ describe("session runtime (adapts one SDK session for subscribed Webviews)", () 
         _sessionId: "session-1",
       },
     ]);
+  });
+
+  it("undoes core history and tells every attached Webview to trim the same prompts", async () => {
+    const { runtime, sdk, broadcasts } = createRuntime();
+    runtime.subscribe("view-2");
+
+    await runtime.undoConversation(2);
+
+    expect(sdk.undoCounts).toEqual([2]);
+    expect(streamData(broadcasts).filter((event) =>
+      typeof event === "object"
+      && event !== null
+      && "type" in event
+      && event.type === "conversation_undo"
+    )).toEqual([
+      { type: "conversation_undo", payload: { count: 2 }, _sessionId: "session-1" },
+      { type: "conversation_undo", payload: { count: 2 }, _sessionId: "session-1" },
+    ]);
+  });
+
+  it("does not undo while another session action is active", async () => {
+    const { runtime, sdk } = createRuntime();
+    runtime.beginHostAction("/compact");
+
+    await expect(runtime.undoConversation(1)).rejects.toThrow(
+      "A response is already being generated for this session.",
+    );
+    expect(sdk.undoCounts).toEqual([]);
   });
 
   it("cancels a long-running host action and ignores its late completion", async () => {

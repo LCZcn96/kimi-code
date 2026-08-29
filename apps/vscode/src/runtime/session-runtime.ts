@@ -385,6 +385,44 @@ export class SessionRuntime {
     });
   }
 
+  async undoConversation(count: number): Promise<void> {
+    this.ensureOpen();
+    if (this.isBusy) {
+      throw new Error(ALREADY_GENERATING_MESSAGE);
+    }
+
+    this.exclusiveActionActive = true;
+    try {
+      await this.session.undoHistory(count);
+    } finally {
+      this.exclusiveActionActive = false;
+    }
+    this.emitStreamEvent({
+      type: "conversation_undo",
+      payload: { count },
+      _sessionId: this.id,
+    });
+
+    // Undo also restores session modes and context usage. Keep every attached
+    // view in sync with that engine state without making status refresh part of
+    // the success condition for the already-completed undo.
+    try {
+      const status = await this.session.getStatus();
+      this.emitStreamEvent({
+        type: "StatusUpdate",
+        payload: {
+          model: status.model,
+          thinking_effort: status.thinkingEffort,
+          plan_mode: status.planMode,
+          context_usage: status.contextUsage,
+        },
+        _sessionId: this.id,
+      });
+    } catch (error) {
+      this.log("Unable to refresh session status after undo", error);
+    }
+  }
+
   respondApproval(id: string, response: ApprovalResponse): boolean {
     return this.reverseRpc.respondApproval(id, response);
   }

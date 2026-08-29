@@ -315,6 +315,45 @@ const eventHandlers: Record<string, EventHandler> = {
     }
   },
 
+  conversation_undo: (draft, payload: { count: number }) => {
+    draft.isUndoing = false;
+
+    let remaining = payload.count;
+    let startIndex = -1;
+    for (let index = draft.messages.length - 1; index >= 0; index -= 1) {
+      const message = draft.messages[index];
+      if (message.role !== "user" || message.forkable === false) continue;
+      remaining -= 1;
+      if (remaining === 0) {
+        startIndex = index;
+        break;
+      }
+    }
+    if (startIndex < 0) return;
+
+    const content = draft.messages[startIndex].content;
+    draft.messages.splice(startIndex);
+    draft.isStreaming = false;
+    draft.isCompacting = false;
+    draft.handshakeReceived = false;
+    draft.activeTokenUsage = createEmptyTokenUsage();
+    draft.pendingInput = { content, model: useSettingsStore.getState().currentModel };
+    draft.pendingQuestion = null;
+    draft.queue = [];
+    draft.draftMedia = typeof content === "string"
+      ? []
+      : content.flatMap((part) => {
+          if (part.type === "image_url") {
+            return [{ id: part.image_url.id ?? crypto.randomUUID(), dataUri: part.image_url.url }];
+          }
+          if (part.type === "video_url") {
+            return [{ id: part.video_url.id ?? crypto.randomUUID(), dataUri: part.video_url.url }];
+          }
+          return [];
+        });
+    useApprovalStore.getState().clearRequests();
+  },
+
   stream_complete: (draft, payload: { result: RunResult }) => {
     addTokenUsage(draft.tokenUsage, draft.activeTokenUsage);
     draft.activeTokenUsage = createEmptyTokenUsage();
