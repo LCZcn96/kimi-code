@@ -1,5 +1,12 @@
 # Changelog
 
+## Community build 0.4.2
+
+### Changed
+
+- Moved the prompt-navigation launcher from the chat overlay into the composer
+  action row beside the attachment, settings, and send controls.
+
 ## Community build 0.4.1
 
 ### Added

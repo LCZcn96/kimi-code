@@ -9,7 +9,7 @@ Moonshot AI. The upstream project remains
 
 The community release changes and distributes only `apps/vscode`. It does not
 publish replacement CLI, SDK, npm, Marketplace, or Open VSX packages. Version
-0.4.1 is based on upstream VS Code extension 0.7.3 at commit `d8317d81e` and
+0.4.2 is based on upstream VS Code extension 0.7.3 at commit `d8317d81e` and
 contains:
 
 - the long-running stream timeout fix proposed in upstream PR
@@ -20,7 +20,8 @@ contains:
   unfinished-Markdown path; and
 - prompt navigation with a compact outline, previous/next actions, active-item
   tracking, timestamped entries, a centered panel, and clickable shortcut
-  markers along the left edge of the chat; and
+  markers along the left edge of the chat, opened from the composer action
+  row; and
 - conversation undo from user prompt bubbles, including prompt/media restore,
   compaction and cleared-context boundaries, plus an opt-in, conflict-safe
   rollback for changes made through Kimi Write/Edit tools. File rollback is
