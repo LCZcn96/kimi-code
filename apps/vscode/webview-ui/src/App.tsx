@@ -17,6 +17,7 @@ import type { UIStreamEvent, StreamError, ExtensionConfig } from "shared/types";
 import "./styles/index.css";
 
 function MainContent({ onAuthAction }: { onAuthAction: () => void }) {
+  const [promptNavigationOpen, setPromptNavigationOpen] = useState(false);
   const processEvent = useChatStore((state) => state.processEvent);
   const startNewConversation = useChatStore((state) => state.startNewConversation);
   const sessionId = useChatStore((state) => state.sessionId);
@@ -77,10 +78,19 @@ function MainContent({ onAuthAction }: { onAuthAction: () => void }) {
   return (
     <>
       <div className="flex-1 min-h-0 relative group/chat">
-        <ChatArea />
+        <ChatArea
+          promptNavigationOpen={promptNavigationOpen}
+          onPromptNavigationOpenChange={setPromptNavigationOpen}
+        />
       </div>
       <div className="shrink-0 max-h-[80vh] flex flex-col min-h-0">
-        <InputArea onAuthAction={onAuthAction} />
+        <InputArea
+          onAuthAction={onAuthAction}
+          promptNavigationOpen={promptNavigationOpen}
+          onTogglePromptNavigation={() => {
+            setPromptNavigationOpen((open) => !open);
+          }}
+        />
       </div>
       <MCPServersModal />
       <WorkDirModal />

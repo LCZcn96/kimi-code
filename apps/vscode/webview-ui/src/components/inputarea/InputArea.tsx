@@ -1,6 +1,6 @@
 import { Fragment, useRef, useMemo, useState, useEffect, useCallback } from "react";
 import { useMemoizedFn } from "ahooks";
-import { IconSend, IconPlayerStop, IconChevronDown, IconPlus } from "@tabler/icons-react";
+import { IconSend, IconPlayerStop, IconChevronDown, IconList, IconPlus } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -41,12 +41,18 @@ import { computeMentionInsert } from "./utils";
 
 interface InputAreaProps {
   onAuthAction?: () => void;
+  promptNavigationOpen: boolean;
+  onTogglePromptNavigation: () => void;
 }
 
 const SWITCH_CACHE_NOTE =
   "Note: Switching models or thinking effort invalidates the existing prompt cache. Start a new conversation to avoid extra token costs.";
 
-export function InputArea({ onAuthAction }: InputAreaProps) {
+export function InputArea({
+  onAuthAction,
+  promptNavigationOpen,
+  onTogglePromptNavigation,
+}: InputAreaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
@@ -60,7 +66,11 @@ export function InputArea({ onAuthAction }: InputAreaProps) {
   const thinkingMode = getCurrentThinkingMode();
   // A switch from a non-empty conversation resends the accumulated context,
   // losing the prompt cache — surface the cost note in the switcher dropdowns.
-  const hasConversationHistory = messages.some((message) => message.role === "user");
+  const promptCount = useMemo(
+    () => messages.filter((message) => message.role === "user").length,
+    [messages],
+  );
+  const hasConversationHistory = promptCount > 0;
 
   const [showPlanModeConfirm, setShowPlanModeConfirm] = useState(false);
 
@@ -478,6 +488,27 @@ export function InputArea({ onAuthAction }: InputAreaProps) {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              {promptCount >= 2 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={onTogglePromptNavigation}
+                      aria-label={`${promptNavigationOpen ? "Close" : "Open"} prompt navigation`}
+                      aria-pressed={promptNavigationOpen}
+                      className={cn(
+                        "text-muted-foreground",
+                        promptNavigationOpen && "bg-accent text-foreground",
+                      )}
+                    >
+                      <IconList className="size-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Prompt navigation ({promptCount})</TooltipContent>
+                </Tooltip>
+              )}
+
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button variant="ghost" size="icon-xs" onClick={handleAddButtonClick} className="text-muted-foreground">

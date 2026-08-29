@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import ScrollToBottom, { useScrollToBottom, useSticky } from "react-scroll-to-bottom";
-import { IconArrowDown, IconArrowUp, IconList, IconX } from "@tabler/icons-react";
+import { IconArrowDown, IconArrowUp, IconX } from "@tabler/icons-react";
 import { ChatMessage } from "./ChatMessage";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { useChatStore } from "@/stores";
@@ -29,9 +29,16 @@ function ScrollButton() {
   );
 }
 
-function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
+function PromptNavigator({
+  items,
+  open,
+  onOpenChange,
+}: {
+  items: PromptNavigationItem[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [activeIndex, setActiveIndex] = useState(Math.max(0, items.length - 1));
-  const [open, setOpen] = useState(false);
   const itemIds = items.map((item) => item.id).join("\n");
 
   useEffect(() => {
@@ -64,6 +71,10 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
       scrollView.removeEventListener("scroll", syncActivePrompt);
     };
   }, [itemIds]);
+
+  useEffect(() => {
+    if (items.length < 2 && open) onOpenChange(false);
+  }, [items.length, open, onOpenChange]);
 
   if (items.length < 2) return null;
 
@@ -103,18 +114,7 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
         ))}
       </nav>
 
-      {!open ? (
-        <button
-          type="button"
-          aria-label="Open prompt navigation"
-          title="Prompt navigation"
-          onClick={() => setOpen(true)}
-          className="absolute right-14 bottom-4 z-20 flex h-8 items-center gap-1.5 rounded-full border border-border bg-popover px-2.5 text-xs text-muted-foreground shadow-lg hover:text-foreground cursor-pointer"
-        >
-          <IconList className="size-4" />
-          <span>{items.length}</span>
-        </button>
-      ) : (
+      {open && (
         <section
           aria-label="Prompt navigation"
           className="absolute bottom-4 left-1/2 z-30 flex max-h-[55%] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-2xl"
@@ -146,7 +146,7 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
               type="button"
               aria-label="Close prompt navigation"
               title="Close prompt navigation"
-              onClick={() => setOpen(false)}
+              onClick={() => onOpenChange(false)}
               className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
             >
               <IconX className="size-4" />
@@ -188,7 +188,13 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
   );
 }
 
-function MessageList() {
+function MessageList({
+  promptNavigationOpen,
+  onPromptNavigationOpenChange,
+}: {
+  promptNavigationOpen: boolean;
+  onPromptNavigationOpenChange: (open: boolean) => void;
+}) {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const isUndoing = useChatStore((s) => s.isUndoing);
@@ -213,13 +219,23 @@ function MessageList() {
           );
         })}
       </div>
-      <PromptNavigator items={promptItems} />
+      <PromptNavigator
+        items={promptItems}
+        open={promptNavigationOpen}
+        onOpenChange={onPromptNavigationOpenChange}
+      />
       <ScrollButton />
     </>
   );
 }
 
-export function ChatArea() {
+export function ChatArea({
+  promptNavigationOpen,
+  onPromptNavigationOpenChange,
+}: {
+  promptNavigationOpen: boolean;
+  onPromptNavigationOpenChange: (open: boolean) => void;
+}) {
   const messageCount = useChatStore((s) => s.messages.length);
 
   if (messageCount === 0) {
@@ -233,7 +249,10 @@ export function ChatArea() {
   return (
     <div className="h-full relative">
       <ScrollToBottom className="h-full" scrollViewClassName="chat-scroll-view h-full overflow-y-auto overflow-x-hidden" followButtonClassName="hidden" initialScrollBehavior="auto">
-        <MessageList />
+        <MessageList
+          promptNavigationOpen={promptNavigationOpen}
+          onPromptNavigationOpenChange={onPromptNavigationOpenChange}
+        />
       </ScrollToBottom>
     </div>
   );
