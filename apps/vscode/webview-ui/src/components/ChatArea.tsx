@@ -10,6 +10,8 @@ import { getConversationUndoCounts } from "@/lib/conversation-undo";
 import { getForkTurnIndex } from "shared/fork-turn-index";
 
 const findPromptAnchor = (id: string) => document.querySelector<HTMLElement>(`#${CSS.escape(`prompt-${id}`)}`);
+const promptTimeFormatter = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const promptDateTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 function ScrollButton() {
   const scrollToBottom = useScrollToBottom();
@@ -107,7 +109,7 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
           aria-label="Open prompt navigation"
           title="Prompt navigation"
           onClick={() => setOpen(true)}
-          className="absolute bottom-4 left-4 z-20 flex h-8 items-center gap-1.5 rounded-full border border-border bg-popover px-2.5 text-xs text-muted-foreground shadow-lg hover:text-foreground cursor-pointer"
+          className="absolute right-14 bottom-4 z-20 flex h-8 items-center gap-1.5 rounded-full border border-border bg-popover px-2.5 text-xs text-muted-foreground shadow-lg hover:text-foreground cursor-pointer"
         >
           <IconList className="size-4" />
           <span>{items.length}</span>
@@ -115,7 +117,7 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
       ) : (
         <section
           aria-label="Prompt navigation"
-          className="absolute bottom-4 right-2 left-8 z-30 ml-auto flex max-h-[55%] max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-2xl"
+          className="absolute bottom-4 left-1/2 z-30 flex max-h-[55%] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-2xl"
         >
           <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-2">
             <div className="flex-1 text-xs font-semibold">Prompt navigation</div>
@@ -164,7 +166,16 @@ function PromptNavigator({ items }: { items: PromptNavigationItem[] }) {
                   index === activeIndex && "bg-muted",
                 )}
               >
-                <div className="line-clamp-2 text-xs font-semibold leading-relaxed">{item.title}</div>
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1 line-clamp-2 text-xs font-semibold leading-relaxed">{item.title}</div>
+                  <time
+                    dateTime={new Date(item.timestamp).toISOString()}
+                    title={promptDateTimeFormatter.format(item.timestamp)}
+                    className="shrink-0 pt-0.5 text-[10px] font-normal text-muted-foreground"
+                  >
+                    {promptTimeFormatter.format(item.timestamp)}
+                  </time>
+                </div>
                 <div className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
                   {item.preview || "No text response"}
                 </div>

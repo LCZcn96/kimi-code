@@ -5,6 +5,7 @@ export interface PromptNavigationItem {
   id: string;
   title: string;
   preview: string;
+  timestamp: number;
 }
 
 const promptTitleCache = new WeakMap<ChatMessage, string>();
@@ -40,7 +41,12 @@ export function getPromptNavigationItems(messages: ChatMessage[]): PromptNavigat
   const items: PromptNavigationItem[] = [];
   for (const message of messages) {
     if (message.role === "user") {
-      items.push({ id: message.id, title: getPromptTitle(message), preview: "" });
+      items.push({
+        id: message.id,
+        title: getPromptTitle(message),
+        preview: "",
+        timestamp: message.timestamp,
+      });
     } else if (items.length > 0 && !items.at(-1)!.preview) {
       items.at(-1)!.preview = compactNavigationText(contentPrefix(message));
     }

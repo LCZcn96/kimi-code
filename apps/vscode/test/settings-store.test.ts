@@ -607,8 +607,8 @@ describe("Webview prompt navigation", () => {
     ];
 
     expect(getPromptNavigationItems(messages)).toEqual([
-      { id: "user-one", title: "First prompt", preview: "First response with details" },
-      { id: "user-two", title: "Media prompt", preview: "" },
+      { id: "user-one", title: "First prompt", preview: "First response with details", timestamp: 1 },
+      { id: "user-two", title: "Media prompt", preview: "", timestamp: 3 },
     ]);
   });
 });
