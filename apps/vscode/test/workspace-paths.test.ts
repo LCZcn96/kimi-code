@@ -310,6 +310,15 @@ describe("Webview workspace paths (selected-directory containment)", () => {
       captureBaseline: (summary, filePath, webviewIds) => {
         bridge.captureFileBaseline(summary, filePath, webviewIds);
       },
+      captureBaselineOutput: vi.fn(),
+      finishBaselineTurn: vi.fn(),
+      undoBaselineTurns: async () => ({
+        status: "kept",
+        restored: [],
+        removed: [],
+        conflicted: [],
+        failed: [],
+      }),
       log: vi.fn(),
     });
     sessionRuntimes.push(runtime);

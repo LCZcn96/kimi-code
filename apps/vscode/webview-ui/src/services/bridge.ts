@@ -16,6 +16,7 @@ import type {
   WorkspaceStatus,
   LoginStatus,
   UIStreamEvent,
+  UndoFileChangesResult,
 } from "shared/types";
 
 interface PendingRequest {
@@ -193,8 +194,11 @@ class Bridge {
     return this.call<{ aborted: boolean }>(Methods.AbortChat);
   }
 
-  undoConversation(count: number) {
-    return this.call<{ ok: boolean }>(Methods.UndoConversation, { count });
+  undoConversation(count: number, revertFiles = false) {
+    return this.call<{ ok: boolean; files?: UndoFileChangesResult }>(
+      Methods.UndoConversation,
+      { count, revertFiles },
+    );
   }
 
   resetSession() {

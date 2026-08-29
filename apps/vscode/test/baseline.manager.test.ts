@@ -4,6 +4,7 @@
  * Wiring: real temporary workspace/global-storage/legacy files; no stubbed collaborators.
  * Run: pnpm --filter kimi-code test -- baseline.manager.test.ts
  */
+import { createHash } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   BaselineManager,
+  resolveSessionFile,
   type BaselineSession,
 } from '../src/managers/baseline.manager';
 
@@ -19,6 +21,8 @@ let root: string;
 let workDir: string;
 let storageRoot: string;
 let manager: BaselineManager;
+
+const digest = (value: string) => createHash('sha256').update(value, 'utf-8').digest('hex');
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'vscode-baseline-'));
@@ -58,6 +62,31 @@ describe('file baselines (capture, compare, keep, and undo)', () => {
     await expect(reloadedManager.getContent(session, filePath)).resolves.toBe(
       'persisted original\n',
     );
+  });
+
+  it('upgrades a version 1 manifest when the first turn snapshot is written', async () => {
+    const session = createSession('ses-v1');
+    const content = 'version one original\n';
+    const snapshot = digest(content);
+    const sessionRoot = join(storageRoot, 'baselines', digest('default'), digest(session.id));
+    await mkdir(join(sessionRoot, 'snapshots'), { recursive: true });
+    await writeFile(join(sessionRoot, 'snapshots', snapshot), content, 'utf-8');
+    await writeFile(join(sessionRoot, 'manifest.json'), JSON.stringify({
+      version: 1,
+      sessionId: session.id,
+      entries: { 'app.ts': { snapshot, existedBefore: true } },
+      acceptedLegacyPaths: [],
+    }), 'utf-8');
+
+    await manager.finishTurn(session, 'sdk:1');
+
+    const persisted = JSON.parse(await readFile(join(sessionRoot, 'manifest.json'), 'utf-8')) as {
+      version: number;
+      turns: Array<{ id: string }>;
+    };
+    expect(persisted.version).toBe(2);
+    expect(persisted.turns).toEqual([{ id: 'sdk:1', files: {} }]);
+    await expect(manager.getContent(session, 'app.ts')).resolves.toBe(content);
   });
 
   it('isolates the same session id between different Kimi homes', async () => {
@@ -172,6 +201,165 @@ describe('file baselines (capture, compare, keep, and undo)', () => {
 
     await expect(readFile(join(workDir, 'one.ts'), 'utf-8')).resolves.toBe('one before');
     await expect(readFile(join(workDir, 'two.ts'), 'utf-8')).resolves.toBe('two before');
+  });
+
+  it('restores the state before the earliest undone turn', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'app.ts');
+    await writeFile(filePath, 'before conversation\n', 'utf-8');
+
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'after turn one\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:1');
+
+    await manager.capture(session, filePath, 'sdk:2');
+    await writeFile(filePath, 'after turn two\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:2');
+
+    await manager.capture(session, filePath, 'sdk:3');
+    await writeFile(filePath, 'after turn three\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:3');
+
+    const reloadedManager = new BaselineManager(storageRoot);
+    await expect(reloadedManager.undoTurns(session, 2, true)).resolves.toEqual({
+      status: 'restored',
+      restored: ['app.ts'],
+      removed: [],
+      conflicted: [],
+      failed: [],
+    });
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('after turn one\n');
+  });
+
+  it('removes a file first created in an undone turn', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'created.ts');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'created\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:1');
+
+    await expect(manager.undoTurns(session, 1, true)).resolves.toMatchObject({
+      status: 'restored',
+      restored: [],
+      removed: ['created.ts'],
+    });
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it('keeps a file that changed after the recorded turn completed', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'app.ts');
+    await writeFile(filePath, 'before\n', 'utf-8');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'kimi change\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:1');
+    await writeFile(filePath, 'user change\n', 'utf-8');
+
+    await expect(manager.undoTurns(session, 1, true)).resolves.toMatchObject({
+      status: 'partial',
+      restored: [],
+      removed: [],
+      conflicted: ['app.ts'],
+    });
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('user change\n');
+  });
+
+  it('keeps a file changed after the last tracked tool output but before turn completion', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'app.ts');
+    await writeFile(filePath, 'before\n', 'utf-8');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'kimi change\n', 'utf-8');
+    await manager.captureTurnOutput(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'user change\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:1');
+
+    await expect(manager.undoTurns(session, 1, true)).resolves.toMatchObject({
+      status: 'partial',
+      restored: [],
+      conflicted: ['app.ts'],
+    });
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('user change\n');
+  });
+
+  it('keeps a file that diverged between two tracked tool calls in one turn', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'app.ts');
+    await writeFile(filePath, 'before\n', 'utf-8');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'first kimi change\n', 'utf-8');
+    await manager.captureTurnOutput(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'interleaved user change\n', 'utf-8');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'second kimi change\n', 'utf-8');
+    await manager.captureTurnOutput(session, filePath, 'sdk:1');
+    await manager.finishTurn(session, 'sdk:1');
+
+    await expect(manager.undoTurns(session, 1, true)).resolves.toMatchObject({
+      status: 'partial',
+      restored: [],
+      conflicted: ['app.ts'],
+    });
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('second kimi change\n');
+  });
+
+  it('keeps an open dirty document even when its disk content still matches the turn', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'app.ts');
+    await writeFile(filePath, 'before\n', 'utf-8');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'kimi change\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:1');
+
+    await expect(manager.undoTurns(session, 1, true, () => true)).resolves.toMatchObject({
+      status: 'partial',
+      restored: [],
+      conflicted: ['app.ts'],
+    });
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('kimi change\n');
+  });
+
+  it('discards kept turn snapshots without changing files', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'app.ts');
+    await writeFile(filePath, 'before\n', 'utf-8');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'after\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:1');
+
+    await expect(manager.undoTurns(session, 1, false)).resolves.toMatchObject({
+      status: 'kept',
+    });
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('after\n');
+    await expect(manager.undoTurns(session, 1, true)).resolves.toMatchObject({
+      status: 'unavailable',
+    });
+  });
+
+  it('discards an undone anchor even when its file snapshot is missing', async () => {
+    const session = createSession();
+    const filePath = join(workDir, 'app.ts');
+    await writeFile(filePath, 'before\n', 'utf-8');
+    await manager.capture(session, filePath, 'sdk:1');
+    await writeFile(filePath, 'after\n', 'utf-8');
+    await manager.finishTurn(session, 'sdk:1');
+
+    const sessionRoot = join(storageRoot, 'baselines', digest('default'), digest(session.id));
+    const manifestPath = join(sessionRoot, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      turns: Array<{ files: Record<string, { beforeSnapshot: string }> }>;
+    };
+    const snapshot = manifest.turns[0]?.files['app.ts']?.beforeSnapshot;
+    if (snapshot === undefined) throw new Error('Expected an app.ts turn snapshot');
+    await unlink(join(sessionRoot, 'snapshots', snapshot));
+
+    await expect(manager.undoTurns(session, 1, true)).resolves.toMatchObject({
+      status: 'partial',
+      failed: ['app.ts'],
+    });
+    const persisted = JSON.parse(await readFile(manifestPath, 'utf-8')) as { turns: unknown[] };
+    expect(persisted.turns).toEqual([]);
+    await expect(readFile(filePath, 'utf-8')).resolves.toBe('after\n');
   });
 
   it('refuses undo all when a tracked directory now links outside the workspace', async () => {
@@ -357,9 +545,13 @@ describe('baseline boundaries (errors, cleanup, and platform paths)', () => {
       id: 'ses-unc',
       workDir: '\\\\Server\\Share\\Workspace',
     };
-    await manager.capture(session, '\\\\server\\share\\workspace\\src\\new.ts');
 
-    await expect(manager.getContent(session, 'src\\new.ts')).resolves.toBe('');
+    // This is a path-semantics test, not a network-share integration test.
+    // Accessing the synthetic share on Windows returns UNKNOWN (correctly)
+    // instead of ENOENT, so keep filesystem I/O out of this assertion.
+    expect(
+      resolveSessionFile(session, '\\\\server\\share\\workspace\\src\\new.ts').relativePath,
+    ).toBe('src/new.ts');
   });
 
   it('rejects a UNC path from another share', async () => {

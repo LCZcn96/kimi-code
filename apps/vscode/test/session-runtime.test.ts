@@ -33,6 +33,13 @@ interface BaselineRecord {
   readonly session: Pick<SessionSummary, "id" | "workDir" | "metadata">;
   readonly filePath: string;
   readonly webviewIds: readonly string[];
+  readonly turnSnapshotId?: string;
+}
+
+interface BaselineOutputRecord {
+  readonly session: Pick<SessionSummary, "id" | "workDir" | "metadata">;
+  readonly filePath: string;
+  readonly turnSnapshotId: string;
 }
 
 interface FakeSessionBoundary {
@@ -183,17 +190,44 @@ function createRuntime(legacyApproval = DEFAULT_LEGACY_APPROVAL) {
   const sdk = createFakeSession();
   const broadcasts: BroadcastRecord[] = [];
   const baselines: BaselineRecord[] = [];
+  const baselineOutputs: BaselineOutputRecord[] = [];
+  const finishedBaselineTurns: string[] = [];
+  const baselineUndos: Array<{ count: number; restoreFiles: boolean; webviewIds: readonly string[] }> = [];
   const runtime = new SessionRuntime({
     session: sdk.session,
     legacyApproval,
     broadcast: (event, data, webviewId) => broadcasts.push({ event, data, webviewId }),
-    captureBaseline: (session, filePath, webviewIds) => {
-      baselines.push({ session, filePath, webviewIds });
+    captureBaseline: (session, filePath, webviewIds, turnSnapshotId) => {
+      baselines.push({ session, filePath, webviewIds, turnSnapshotId });
+    },
+    captureBaselineOutput: (session, filePath, turnSnapshotId) => {
+      baselineOutputs.push({ session, filePath, turnSnapshotId });
+    },
+    finishBaselineTurn: (_session, turnSnapshotId) => {
+      finishedBaselineTurns.push(turnSnapshotId);
+    },
+    undoBaselineTurns: async (_session, count, restoreFiles, webviewIds) => {
+      baselineUndos.push({ count, restoreFiles, webviewIds });
+      return {
+        status: restoreFiles ? "restored" : "kept",
+        restored: restoreFiles ? ["src/index.ts"] : [],
+        removed: [],
+        conflicted: [],
+        failed: [],
+      };
     },
     log: () => undefined,
   });
   runtime.subscribe("view-1");
-  return { runtime, sdk, broadcasts, baselines };
+  return {
+    runtime,
+    sdk,
+    broadcasts,
+    baselines,
+    baselineOutputs,
+    finishedBaselineTurns,
+    baselineUndos,
+  };
 }
 
 function streamData(records: readonly BroadcastRecord[]): unknown[] {
@@ -269,12 +303,15 @@ describe("session runtime (adapts one SDK session for subscribed Webviews)", () 
   });
 
   it("undoes core history and tells every attached Webview to trim the same prompts", async () => {
-    const { runtime, sdk, broadcasts } = createRuntime();
+    const { runtime, sdk, broadcasts, baselineUndos } = createRuntime();
     runtime.subscribe("view-2");
 
     await runtime.undoConversation(2);
 
     expect(sdk.undoCounts).toEqual([2]);
+    expect(baselineUndos).toEqual([
+      { count: 2, restoreFiles: false, webviewIds: ["view-1", "view-2"] },
+    ]);
     expect(streamData(broadcasts).filter((event) =>
       typeof event === "object"
       && event !== null
@@ -770,10 +807,80 @@ describe("session runtime (adapts one SDK session for subscribed Webviews)", () 
           },
           filePath: "src/index.ts",
           webviewIds: ["view-1"],
+          turnSnapshotId: undefined,
         },
       ]);
     },
   );
+
+  it("associates main and subagent file writes with the active prompt turn", async () => {
+    const { runtime, sdk, baselines, baselineOutputs, finishedBaselineTurns } = createRuntime();
+    const completion = runtime.prompt("update the file");
+    sdk.emit(turnStarted());
+    sdk.emit({
+      type: "tool.call.started",
+      sessionId: "session-1",
+      agentId: "child-1",
+      turnId: 2,
+      toolCallId: "tool-1",
+      name: "Write",
+      args: { path: "src/index.ts" },
+    });
+    sdk.emit({
+      type: "tool.result",
+      sessionId: "session-1",
+      agentId: "child-1",
+      turnId: 2,
+      toolCallId: "tool-1",
+      output: "updated",
+    });
+    sdk.emit(turnEnded("completed"));
+
+    await completion;
+    expect(baselines[0]?.turnSnapshotId).toBe("sdk:7");
+    expect(baselineOutputs).toEqual([{
+      session: {
+        id: "session-1",
+        workDir: "/workspace",
+        metadata: { source: "vscode-test" },
+      },
+      filePath: "src/index.ts",
+      turnSnapshotId: "sdk:7",
+    }]);
+    expect(finishedBaselineTurns).toEqual(["sdk:7"]);
+  });
+
+  it("keeps steer inputs aligned with conversation undo anchors", async () => {
+    const { runtime, sdk, baselines, finishedBaselineTurns } = createRuntime();
+    const completion = runtime.prompt("update the file");
+    sdk.emit(turnStarted());
+
+    await runtime.steer("also update the tests");
+    sdk.emit({
+      type: "tool.call.started",
+      sessionId: "session-1",
+      agentId: "main",
+      turnId: 7,
+      toolCallId: "tool-after-steer",
+      name: "Edit",
+      args: { path: "src/index.ts" },
+    });
+    sdk.emit(turnEnded("completed"));
+
+    await completion;
+    expect(baselines[0]?.turnSnapshotId).toBe("sdk:7:steer:1");
+    expect(finishedBaselineTurns).toEqual(["sdk:7", "sdk:7:steer:1"]);
+  });
+
+  it("records a successful forkable host action as an empty undo turn", () => {
+    const { runtime, finishedBaselineTurns } = createRuntime();
+    const actionId = runtime.beginHostAction("/import notes.md", true);
+
+    runtime.completeHostAction("finished", actionId);
+
+    expect(finishedBaselineTurns).toHaveLength(1);
+    expect(finishedBaselineTurns[0]).toMatch(/^host:[0-9a-f-]{36}$/);
+  });
 
   it.each([
     ["Read", { path: "src/index.ts" }],

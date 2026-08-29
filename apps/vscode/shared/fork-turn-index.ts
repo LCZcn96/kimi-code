@@ -33,7 +33,7 @@ export function getForkTurnIndex(
   return visibleTurns - 1;
 }
 
-function countSteers(message: ForkTurnMessage): number {
+export function countSteers(message: ForkTurnMessage): number {
   return (
     message.steps?.reduce(
       (count, step) => count + step.items.filter((item) => item.type === "steer").length,

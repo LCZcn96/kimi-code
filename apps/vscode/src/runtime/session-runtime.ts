@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   isKimiError,
   type ContentPart as SdkContentPart,
@@ -10,7 +12,7 @@ import {
 import type { ContentPart as LegacyContentPart, ApprovalResponse } from "../../shared/legacy-sdk";
 import { Events } from "../../shared/bridge";
 import { getUserMessage } from "../../shared/errors";
-import type { ErrorPhase, UIStreamEvent } from "../../shared/types";
+import type { ErrorPhase, UIStreamEvent, UndoFileChangesResult } from "../../shared/types";
 import {
   adaptSdkEvent,
   createEventAdapterState,
@@ -34,7 +36,23 @@ export interface SessionRuntimeOptions {
     session: Pick<SessionSummary, "id" | "workDir" | "metadata">,
     filePath: string,
     webviewIds: readonly string[],
+    turnSnapshotId?: string,
   ) => void;
+  readonly captureBaselineOutput: (
+    session: Pick<SessionSummary, "id" | "workDir" | "metadata">,
+    filePath: string,
+    turnSnapshotId: string,
+  ) => void;
+  readonly finishBaselineTurn: (
+    session: Pick<SessionSummary, "id" | "workDir" | "metadata">,
+    turnSnapshotId: string,
+  ) => void;
+  readonly undoBaselineTurns: (
+    session: Pick<SessionSummary, "id" | "workDir" | "metadata">,
+    count: number,
+    restoreFiles: boolean,
+    webviewIds: readonly string[],
+  ) => Promise<UndoFileChangesResult>;
   readonly log: (message: string, error?: unknown) => void;
 }
 
@@ -42,6 +60,9 @@ interface ActivePrompt {
   readonly input: LegacyContentPart[] | string;
   started: boolean;
   settled: boolean;
+  turnSnapshotBaseId?: string;
+  turnSnapshotId?: string;
+  turnSnapshotSequence: number;
   resolve: (result: PromptResult) => void;
 }
 
@@ -72,15 +93,23 @@ export class SessionRuntime {
 
   private readonly broadcast: RuntimeBroadcast;
   private readonly captureBaseline: SessionRuntimeOptions["captureBaseline"];
+  private readonly captureBaselineOutput: SessionRuntimeOptions["captureBaselineOutput"];
+  private readonly finishBaselineTurn: SessionRuntimeOptions["finishBaselineTurn"];
+  private readonly undoBaselineTurns: SessionRuntimeOptions["undoBaselineTurns"];
   private readonly log: SessionRuntimeOptions["log"];
   private readonly webviewIds = new Set<string>();
   private readonly reverseRpc: ReverseRpcController;
+  private readonly pendingFileTools = new Map<string, {
+    readonly filePath: string;
+    readonly turnSnapshotId: string;
+  }>();
   private readonly unsubscribe: () => void;
   private adapterState: EventAdapterState = createEventAdapterState();
   private activePrompt: ActivePrompt | undefined;
   private hostActionActive = false;
   private hostActionSequence = 0;
   private activeHostActionId: number | undefined;
+  private activeHostTurnSnapshotId: string | undefined;
   private readonly cancelledHostActions = new Set<number>();
   private pendingHostCompaction: PendingHostCompaction | undefined;
   private readonly activeWorkSettledWaiters = new Set<() => void>();
@@ -94,6 +123,9 @@ export class SessionRuntime {
     this.session = options.session;
     this.broadcast = options.broadcast;
     this.captureBaseline = options.captureBaseline;
+    this.captureBaselineOutput = options.captureBaselineOutput;
+    this.finishBaselineTurn = options.finishBaselineTurn;
+    this.undoBaselineTurns = options.undoBaselineTurns;
     this.log = options.log;
     this.legacyApproval = options.legacyApproval;
     this.reverseRpc = new ReverseRpcController((event) => this.emitStreamEvent(event));
@@ -204,6 +236,7 @@ export class SessionRuntime {
       input,
       started: false,
       settled: false,
+      turnSnapshotSequence: 0,
       resolve: resolveCompletion,
     };
     this.activePrompt = active;
@@ -231,6 +264,7 @@ export class SessionRuntime {
     const actionId = ++this.hostActionSequence;
     this.hostActionActive = true;
     this.activeHostActionId = actionId;
+    this.activeHostTurnSnapshotId = forkable ? `host:${randomUUID()}` : undefined;
     this.emitStreamEvent({
       type: "TurnBegin",
       payload: { user_input: input, forkable },
@@ -267,8 +301,13 @@ export class SessionRuntime {
     actionId = this.activeHostActionId,
   ): void {
     if (!this.hostActionActive || actionId !== this.activeHostActionId) return;
+    const turnSnapshotId = this.activeHostTurnSnapshotId;
     this.hostActionActive = false;
     this.activeHostActionId = undefined;
+    this.activeHostTurnSnapshotId = undefined;
+    if (status === "finished" && turnSnapshotId !== undefined) {
+      this.finishBaselineTurn(this.baselineSession(), turnSnapshotId);
+    }
     this.emitStreamEvent({
       type: "stream_complete",
       result: { status },
@@ -281,6 +320,7 @@ export class SessionRuntime {
     if (!this.hostActionActive || actionId !== this.activeHostActionId) return;
     this.hostActionActive = false;
     this.activeHostActionId = undefined;
+    this.activeHostTurnSnapshotId = undefined;
     this.notifyActiveWorkSettled();
   }
 
@@ -377,7 +417,19 @@ export class SessionRuntime {
 
   async steer(input: string | LegacyContentPart[]): Promise<void> {
     this.ensureOpen();
+    const active = this.activePrompt;
     await this.session.steer(toSdkPromptInput(input));
+    if (
+      active?.turnSnapshotBaseId !== undefined
+      && active.turnSnapshotId !== undefined
+    ) {
+      this.finishBaselineTurn(this.baselineSession(), active.turnSnapshotId);
+      active.turnSnapshotSequence += 1;
+      active.turnSnapshotId = `${active.turnSnapshotBaseId}:steer:${String(active.turnSnapshotSequence)}`;
+      if (active.settled) {
+        this.finishBaselineTurn(this.baselineSession(), active.turnSnapshotId);
+      }
+    }
     this.emitStreamEvent({
       type: "SteerInput",
       payload: { user_input: input },
@@ -385,15 +437,35 @@ export class SessionRuntime {
     });
   }
 
-  async undoConversation(count: number): Promise<void> {
+  async undoConversation(count: number, restoreFiles = false): Promise<UndoFileChangesResult> {
     this.ensureOpen();
     if (this.isBusy) {
       throw new Error(ALREADY_GENERATING_MESSAGE);
     }
 
+    let files: UndoFileChangesResult;
     this.exclusiveActionActive = true;
     try {
       await this.session.undoHistory(count);
+      try {
+        files = await this.undoBaselineTurns(
+          this.baselineSession(),
+          count,
+          restoreFiles,
+          this.subscribers,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log("Unable to update file snapshots after conversation undo", error);
+        files = {
+          status: "failed",
+          restored: [],
+          removed: [],
+          conflicted: [],
+          failed: [],
+          error: message,
+        };
+      }
     } finally {
       this.exclusiveActionActive = false;
     }
@@ -421,6 +493,7 @@ export class SessionRuntime {
     } catch (error) {
       this.log("Unable to refresh session status after undo", error);
     }
+    return files;
   }
 
   respondApproval(id: string, response: ApprovalResponse): boolean {
@@ -449,6 +522,7 @@ export class SessionRuntime {
       if (this.activePrompt !== undefined) this.settlePrompt({ status: "cancelled" });
       this.hostActionActive = false;
       this.activeHostActionId = undefined;
+      this.activeHostTurnSnapshotId = undefined;
       this.notifyActiveWorkSettled();
     }
     this.cancelledHostActions.clear();
@@ -488,10 +562,18 @@ export class SessionRuntime {
 
     if (event.type === "turn.started" && event.agentId === "main" && this.activePrompt !== undefined) {
       this.activePrompt.started = true;
+      if (this.activePrompt.turnSnapshotBaseId === undefined) {
+        const turnSnapshotId = `sdk:${String(event.turnId)}`;
+        this.activePrompt.turnSnapshotBaseId = turnSnapshotId;
+        this.activePrompt.turnSnapshotId = turnSnapshotId;
+      }
     }
 
     if (event.type === "tool.call.started") {
       this.captureFileBaseline(event);
+    }
+    if (event.type === "tool.result") {
+      this.captureFileOutput(event);
     }
 
     if (event.type === "turn.step.retrying") {
@@ -539,16 +621,39 @@ export class SessionRuntime {
     const filePath = event.args["path"];
     if (typeof filePath !== "string" || filePath.length === 0) return;
 
-    const summary = this.session.summary;
     this.captureBaseline(
-      {
-        id: this.session.id,
-        workDir: this.session.workDir,
-        metadata: summary?.metadata,
-      },
+      this.baselineSession(),
       filePath,
       this.subscribers,
+      this.activePrompt?.turnSnapshotId,
     );
+    const turnSnapshotId = this.activePrompt?.turnSnapshotId;
+    if (turnSnapshotId !== undefined) {
+      this.pendingFileTools.set(fileToolKey(event.agentId, event.toolCallId), {
+        filePath,
+        turnSnapshotId,
+      });
+    }
+  }
+
+  private captureFileOutput(event: Extract<Event, { type: "tool.result" }>): void {
+    const key = fileToolKey(event.agentId, event.toolCallId);
+    const pending = this.pendingFileTools.get(key);
+    if (pending === undefined) return;
+    this.pendingFileTools.delete(key);
+    this.captureBaselineOutput(
+      this.baselineSession(),
+      pending.filePath,
+      pending.turnSnapshotId,
+    );
+  }
+
+  private baselineSession(): Pick<SessionSummary, "id" | "workDir" | "metadata"> {
+    return {
+      id: this.session.id,
+      workDir: this.session.workDir,
+      metadata: this.session.summary?.metadata,
+    };
   }
 
   private emitTerminal(terminal: TurnTerminalMetadata): void {
@@ -627,6 +732,10 @@ export class SessionRuntime {
     const active = this.activePrompt;
     if (active === undefined || active.settled) return;
     active.settled = true;
+    if (active.turnSnapshotId !== undefined) {
+      this.finishBaselineTurn(this.baselineSession(), active.turnSnapshotId);
+    }
+    this.pendingFileTools.clear();
     this.activePrompt = undefined;
     active.resolve(result);
     this.notifyActiveWorkSettled();
@@ -652,6 +761,10 @@ export class SessionRuntime {
   private ensureOpen(): void {
     if (this.closed) throw new Error("Session is closed.");
   }
+}
+
+function fileToolKey(agentId: string, toolCallId: string): string {
+  return `${agentId}\u0000${toolCallId}`;
 }
 
 export function toSdkPromptInput(input: string | LegacyContentPart[]): string | PromptInput {

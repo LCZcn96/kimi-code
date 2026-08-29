@@ -26,6 +26,15 @@ export interface FileChange {
   deletions: number;
 }
 
+export interface UndoFileChangesResult {
+  status: "kept" | "restored" | "partial" | "unavailable" | "failed";
+  restored: string[];
+  removed: string[];
+  conflicted: string[];
+  failed: string[];
+  error?: string;
+}
+
 export interface ExtensionConfig {
   yoloMode: boolean;
   autosave: boolean;

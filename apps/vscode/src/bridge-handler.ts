@@ -43,8 +43,36 @@ export class BridgeHandler {
         version: VSCodeSettings.getExtensionConfig().version,
         useAgentCoreV1,
         broadcast,
-        captureBaseline: (session, filePath, webviewIds) => {
-          this.captureFileBaseline(session, filePath, webviewIds);
+        captureBaseline: (session, filePath, webviewIds, turnSnapshotId) => {
+          this.captureFileBaseline(session, filePath, webviewIds, turnSnapshotId);
+        },
+        captureBaselineOutput: (session, filePath, turnSnapshotId) => {
+          void this.baselineManager.captureTurnOutput(session, filePath, turnSnapshotId).catch((error) => {
+            this.logRuntimeError("Unable to capture a turn file result", error);
+          });
+        },
+        finishBaselineTurn: (session, turnSnapshotId) => {
+          void this.baselineManager.finishTurn(session, turnSnapshotId).catch((error) => {
+            this.logRuntimeError("Unable to finish a turn file snapshot", error);
+          });
+        },
+        undoBaselineTurns: async (session, count, restoreFiles, webviewIds) => {
+          const result = await this.baselineManager.undoTurns(
+            session,
+            count,
+            restoreFiles,
+            (filePath) => vscode.workspace.textDocuments.some((document) =>
+              document.isDirty
+              && !document.isUntitled
+              && areSameFsPath(document.uri.fsPath, filePath)),
+          );
+          if (restoreFiles) {
+            await Promise.all(webviewIds.map((webviewId) =>
+              this.fileManager.refreshChanges(webviewId).catch((error) => {
+                this.logRuntimeError("Unable to refresh file changes after conversation undo", error);
+              })));
+          }
+          return result;
         },
         log: (message, error) => this.logRuntimeError(message, error),
       });
@@ -245,6 +273,7 @@ export class BridgeHandler {
     session: BaselineSession,
     filePath: string,
     webviewIds: readonly string[],
+    turnSnapshotId?: string,
   ): void {
     const workspaceRoot = this.workspaceRoot;
     const workspaceRootUri = this.workspaceRootUri;
@@ -274,7 +303,7 @@ export class BridgeHandler {
       return;
     }
 
-    const capture = this.baselineManager.capture(session, resolved.uri.fsPath);
+    const capture = this.baselineManager.capture(session, resolved.uri.fsPath, turnSnapshotId);
     void capture
       .then(async () => {
         await Promise.all(

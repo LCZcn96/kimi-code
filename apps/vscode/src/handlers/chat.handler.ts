@@ -4,7 +4,7 @@ import { isKimiError } from "@moonshot-ai/kimi-code-sdk";
 import { Events, Methods } from "../../shared/bridge";
 import type { ApprovalResponse, ContentPart } from "../../shared/legacy-sdk";
 import { getUserMessage } from "../../shared/errors";
-import type { ErrorPhase } from "../../shared/types";
+import type { ErrorPhase, UndoFileChangesResult } from "../../shared/types";
 import { VSCodeSettings } from "../config/vscode-settings";
 import { normalizeEffort } from "../runtime/kimi-runtime";
 import type { SessionRuntime } from "../runtime/session-runtime";
@@ -153,11 +153,14 @@ const abortChat: Handler<void, { aborted: boolean }> = async (_, ctx) => {
   return { aborted: true };
 };
 
-const undoConversation: Handler<{ count: number }, { ok: boolean }> = async (params, ctx) => {
+const undoConversation: Handler<
+  { count: number; revertFiles?: boolean },
+  { ok: boolean; files?: UndoFileChangesResult }
+> = async (params, ctx) => {
   const runtime = ctx.getSession();
   if (runtime === undefined) return { ok: false };
-  await runtime.undoConversation(params.count);
-  return { ok: true };
+  const files = await runtime.undoConversation(params.count, params.revertFiles === true);
+  return { ok: true, files };
 };
 
 const respondApproval: Handler<RespondApprovalParams, { ok: boolean }> = async (params, ctx) => {

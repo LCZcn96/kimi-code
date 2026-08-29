@@ -2,6 +2,7 @@ import { bridge } from "@/services";
 import { useApprovalStore } from "./approval.store";
 import { useSettingsStore } from "./settings.store";
 import { isPreflightError, isUserInterrupt } from "shared/errors";
+import { countSteers } from "shared/fork-turn-index";
 import type { ChatMessage, UIStep, UIStepItem, ChatState, TokenUsage, CompactionStatus } from "./chat.store";
 import type { ContentPart, ToolCall, ToolResult, TurnBegin, SubagentEvent, ApprovalRequestPayload, DiffBlock, RunResult, QuestionRequest, CompactionOutcome } from "shared/legacy-sdk";
 import type { UIStreamEvent, StreamError } from "shared/types";
@@ -316,12 +317,14 @@ const eventHandlers: Record<string, EventHandler> = {
   },
 
   conversation_undo: (draft, payload: { count: number }) => {
-    draft.isUndoing = false;
-
     let remaining = payload.count;
     let startIndex = -1;
     for (let index = draft.messages.length - 1; index >= 0; index -= 1) {
       const message = draft.messages[index];
+      if (message.role === "assistant" && message.forkable !== false) {
+        remaining -= countSteers(message);
+        continue;
+      }
       if (message.role !== "user" || message.forkable === false) continue;
       remaining -= 1;
       if (remaining === 0) {

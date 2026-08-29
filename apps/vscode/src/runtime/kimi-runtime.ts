@@ -7,7 +7,6 @@ import {
   type ThinkingEffort,
 } from "@moonshot-ai/kimi-code-sdk";
 
-import type { RuntimeBroadcast } from "./session-runtime";
 import {
   corePermissionForLegacyApproval,
   legacyApprovalMetadata,
@@ -16,7 +15,11 @@ import {
   withGlobalYoloMode,
   type LegacyApprovalFlags,
 } from "./legacy-approval";
-import { SessionRuntime } from "./session-runtime";
+import {
+  SessionRuntime,
+  type RuntimeBroadcast,
+  type SessionRuntimeOptions,
+} from "./session-runtime";
 import { areSameFsPath } from "../utils/fs-path";
 
 export interface KimiRuntimeOptions {
@@ -26,7 +29,11 @@ export interface KimiRuntimeOptions {
     session: Pick<SessionSummary, "id" | "workDir" | "metadata">,
     filePath: string,
     webviewIds: readonly string[],
+    turnSnapshotId?: string,
   ) => void;
+  readonly captureBaselineOutput?: SessionRuntimeOptions["captureBaselineOutput"];
+  readonly finishBaselineTurn?: SessionRuntimeOptions["finishBaselineTurn"];
+  readonly undoBaselineTurns?: SessionRuntimeOptions["undoBaselineTurns"];
   readonly log: (message: string, error?: unknown) => void;
   readonly homeDir?: string;
   readonly harness?: KimiHarness;
@@ -53,6 +60,9 @@ export class KimiRuntime {
 
   private readonly broadcast: RuntimeBroadcast;
   private readonly captureBaseline: KimiRuntimeOptions["captureBaseline"];
+  private readonly captureBaselineOutput: SessionRuntimeOptions["captureBaselineOutput"];
+  private readonly finishBaselineTurn: SessionRuntimeOptions["finishBaselineTurn"];
+  private readonly undoBaselineTurns: SessionRuntimeOptions["undoBaselineTurns"];
   private readonly log: KimiRuntimeOptions["log"];
   private readonly sessions = new Map<string, SessionRuntime>();
   private readonly sessionByView = new Map<string, string>();
@@ -62,6 +72,15 @@ export class KimiRuntime {
   constructor(options: KimiRuntimeOptions) {
     this.broadcast = options.broadcast;
     this.captureBaseline = options.captureBaseline;
+    this.captureBaselineOutput = options.captureBaselineOutput ?? (() => undefined);
+    this.finishBaselineTurn = options.finishBaselineTurn ?? (() => undefined);
+    this.undoBaselineTurns = options.undoBaselineTurns ?? (async (_session, _count, restoreFiles) => ({
+      status: restoreFiles ? "unavailable" : "kept",
+      restored: [],
+      removed: [],
+      conflicted: [],
+      failed: [],
+    }));
     this.log = options.log;
     const createHarness = options.useAgentCoreV1 ? createKimiHarness : createKimiHarnessV2;
     this.harness =
@@ -272,6 +291,9 @@ export class KimiRuntime {
       legacyApproval,
       broadcast: this.broadcast,
       captureBaseline: this.captureBaseline,
+      captureBaselineOutput: this.captureBaselineOutput,
+      finishBaselineTurn: this.finishBaselineTurn,
+      undoBaselineTurns: this.undoBaselineTurns,
       log: this.log,
     });
     this.sessions.set(session.id, runtime);

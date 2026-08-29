@@ -8,12 +8,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import type { ReactNode } from "react";
 
 interface StreamingConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
+  details?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   onConfirm: () => void;
@@ -27,6 +29,7 @@ export function StreamingConfirmDialog({
   onOpenChange,
   title,
   description = "The current conversation is still generating a response. This action will truncate the output. Are you sure you want to continue?",
+  details,
   confirmLabel = "Continue",
   cancelLabel = "Cancel",
   onConfirm,
@@ -40,6 +43,7 @@ export function StreamingConfirmDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
+          {details}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => onOpenChange(false)} disabled={cancelDisabled}>

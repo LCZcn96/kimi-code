@@ -18,6 +18,7 @@ const boundary = vi.hoisted(() => ({
   trackFiles: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),
+  toastSuccess: vi.fn(),
 }));
 
 vi.mock("@/services", () => ({
@@ -30,7 +31,7 @@ vi.mock("@/services", () => ({
   },
 }));
 vi.mock("@/components/ui/sonner", () => ({
-  toast: { error: boundary.toastError, warning: boundary.toastWarning },
+  toast: { error: boundary.toastError, warning: boundary.toastWarning, success: boundary.toastSuccess },
 }));
 
 import {
@@ -71,6 +72,7 @@ beforeEach(() => {
   boundary.trackFiles.mockReset();
   boundary.toastError.mockReset();
   boundary.toastWarning.mockReset();
+  boundary.toastSuccess.mockReset();
   useSettingsStore.getState().initModels(MODELS, "plain", false);
   useChatStore.setState({
     sessionId: null,
@@ -381,6 +383,34 @@ describe("Webview conversation undo", () => {
     ]);
   });
 
+  it("counts steer inputs as undo anchors and removes the matching prompt suffix", () => {
+    const messages: ChatMessageType[] = [
+      { id: "user-one", role: "user", content: "First prompt", timestamp: 1 },
+      {
+        id: "assistant-one",
+        role: "assistant",
+        content: "First response",
+        timestamp: 2,
+        steps: [{ n: 1, items: [{ type: "steer", content: "Also fix tests" }] }],
+      },
+      { id: "user-two", role: "user", content: "Second prompt", timestamp: 3 },
+      { id: "assistant-two", role: "assistant", content: "Second response", timestamp: 4 },
+    ];
+
+    expect([...getConversationUndoCounts(messages)]).toEqual([
+      ["user-two", 1],
+      ["user-one", 3],
+    ]);
+    useChatStore.setState({ messages });
+    useChatStore.getState().processEvent({
+      type: "conversation_undo",
+      payload: { count: 3 },
+    });
+
+    expect(useChatStore.getState().messages).toEqual([]);
+    expect(useChatStore.getState().pendingInput).toMatchObject({ content: "First prompt" });
+  });
+
   it("removes the selected prompt suffix and restores its text and media", () => {
     useChatStore.setState({
       isUndoing: true,
@@ -411,7 +441,7 @@ describe("Webview conversation undo", () => {
     });
 
     expect(useChatStore.getState()).toMatchObject({
-      isUndoing: false,
+      isUndoing: true,
       messages: [
         { id: "user-one" },
         { id: "assistant-one" },
@@ -436,11 +466,31 @@ describe("Webview conversation undo", () => {
 
     const undo = useChatStore.getState().undoConversation(2);
     expect(useChatStore.getState().isUndoing).toBe(true);
-    expect(boundary.undoConversation).toHaveBeenCalledWith(2);
+    expect(boundary.undoConversation).toHaveBeenCalledWith(2, false);
 
     finishUndo({ ok: true });
     await undo;
     expect(useChatStore.getState().isUndoing).toBe(false);
+  });
+
+  it("requests per-turn file rollback and reports conflicts without failing conversation undo", async () => {
+    boundary.undoConversation.mockResolvedValue({
+      ok: true,
+      files: {
+        status: "partial",
+        restored: ["src/restored.ts"],
+        removed: [],
+        conflicted: ["src/user-edited.ts"],
+        failed: [],
+      },
+    });
+
+    await useChatStore.getState().undoConversation(1, true);
+
+    expect(boundary.undoConversation).toHaveBeenCalledWith(1, true);
+    expect(boundary.toastWarning).toHaveBeenCalledWith(
+      "Conversation undone. 1 file change was reverted; 1 file was kept because of conflicts or errors.",
+    );
   });
 });
 

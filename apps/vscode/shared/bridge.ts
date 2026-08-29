@@ -173,7 +173,8 @@ function validateParams(method: RpcMethod, params: unknown): boolean {
     case Methods.UndoConversation:
       return isPlainObject(params)
         && Number.isSafeInteger(params["count"])
-        && (params["count"] as number) > 0;
+        && (params["count"] as number) > 0
+        && isOptionalType(params["revertFiles"], "boolean");
     case Methods.RespondApproval:
       return isPlainObject(params)
         && isNonEmptyString(params["requestId"])

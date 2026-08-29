@@ -13,6 +13,7 @@ import { InlineError } from "./InlineError";
 import { PlanCard } from "./PlanCard";
 import { StreamingConfirmDialog } from "./StreamingConfirmDialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "@/components/ui/sonner";
 import { useChatStore } from "@/stores";
 import { bridge } from "@/services";
@@ -223,6 +224,7 @@ function UserMessage({
 }) {
   const [previewMedia, setPreviewMedia] = useState<string | null>(null);
   const [showUndoConfirm, setShowUndoConfirm] = useState(false);
+  const [revertFiles, setRevertFiles] = useState(false);
   const undoConversation = useChatStore((s) => s.undoConversation);
   const displayContent = Content.getText(message.content);
   const images = Content.getImages(message.content);
@@ -231,17 +233,16 @@ function UserMessage({
   const handleUndo = async () => {
     if (undoCount === undefined) return;
     try {
-      await undoConversation(undoCount);
+      await undoConversation(undoCount, revertFiles);
       setShowUndoConfirm(false);
     } catch (error) {
       toast.error(`Failed to undo conversation: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  const laterPromptCount = Math.max(0, (undoCount ?? 1) - 1);
-  const undoDescription = laterPromptCount === 0
+  const undoDescription = (undoCount ?? 1) === 1
     ? "This removes this prompt and its response from the conversation context."
-    : `This removes this prompt and ${String(laterPromptCount)} later ${laterPromptCount === 1 ? "prompt" : "prompts"} from the conversation context.`;
+    : "This removes this prompt and all later conversation turns from the conversation context.";
 
   return (
     <div className="group/user px-3 pt-3 pb-1 flex justify-end">
@@ -276,9 +277,30 @@ function UserMessage({
       <MediaPreviewModal src={previewMedia} onClose={() => setPreviewMedia(null)} />
       <StreamingConfirmDialog
         open={showUndoConfirm}
-        onOpenChange={setShowUndoConfirm}
+        onOpenChange={(open) => {
+          setShowUndoConfirm(open);
+          if (!open) setRevertFiles(false);
+        }}
         title="Undo Conversation"
-        description={`${undoDescription} The selected prompt will be restored to the input. File changes are not reverted.`}
+        description={`${undoDescription} The selected prompt will be restored to the input.`}
+        details={
+          <div className="mt-2 rounded-md border border-border bg-muted/40 p-2.5 text-xs">
+            <label htmlFor={`undo-files-${message.id}`} className="flex cursor-pointer items-start gap-2">
+              <Checkbox
+                id={`undo-files-${message.id}`}
+                checked={revertFiles}
+                onCheckedChange={(checked) => {
+                  setRevertFiles(checked === true);
+                }}
+                disabled={conversationBusy}
+              />
+              <span className="font-medium leading-4">Also revert tracked file changes from the removed turns</span>
+            </label>
+            <p className="mt-1.5 pl-6 text-[11px] leading-4 text-muted-foreground">
+              Covers Kimi Write/Edit changes with per-turn snapshots. Files changed afterward are kept; older conversations without snapshots keep their files.
+            </p>
+          </div>
+        }
         confirmLabel="Undo"
         onConfirm={() => { void handleUndo(); }}
         confirmLoading={conversationBusy}

@@ -8,7 +8,7 @@ import { toast } from "@/components/ui/sonner";
 import { useSettingsStore } from "./settings.store";
 import { processEvent } from "./event-handlers";
 import type { StatusUpdate, ContentPart, QuestionRequest, ToolResult, CompactionOutcome } from "shared/legacy-sdk";
-import type { UIStreamEvent } from "shared/types";
+import type { UIStreamEvent, UndoFileChangesResult } from "shared/types";
 
 const HANDSHAKE_TIMEOUT_MS = 30_000;
 
@@ -106,7 +106,7 @@ export interface ChatState {
   planMode: boolean;
 
   sendMessage: (text: string) => void;
-  undoConversation: (count: number) => Promise<void>;
+  undoConversation: (count: number, revertFiles?: boolean) => Promise<void>;
   retryLastMessage: () => void;
   processEvent: (event: UIStreamEvent) => void;
   loadSession: (sessionId: string, events: UIStreamEvent[]) => Promise<void>;
@@ -143,6 +143,27 @@ function clearAllInlineErrors(draft: ChatState): void {
       msg.inlineError = undefined;
     }
   }
+}
+
+function reportUndoFileChanges(result: UndoFileChangesResult | undefined): void {
+  if (result === undefined || result.status === "kept") return;
+  const changed = result.restored.length + result.removed.length;
+  if (result.status === "restored") {
+    if (changed > 0) toast.success(`Conversation undone and ${String(changed)} file ${changed === 1 ? "change was" : "changes were"} reverted.`);
+    return;
+  }
+  if (result.status === "unavailable") {
+    toast.warning("Conversation undone. Per-turn file snapshots were unavailable, so file changes were kept.");
+    return;
+  }
+  if (result.status === "failed") {
+    toast.error(`Conversation undone, but file changes could not be reverted${result.error ? `: ${result.error}` : "."}`);
+    return;
+  }
+  const skipped = result.conflicted.length + result.failed.length;
+  toast.warning(
+    `Conversation undone. ${String(changed)} file ${changed === 1 ? "change was" : "changes were"} reverted; ${String(skipped)} ${skipped === 1 ? "file was" : "files were"} kept because of conflicts or errors.`,
+  );
 }
 
 function doSend(state: ChatState, content: string | ContentPart[], model: string) {
@@ -231,7 +252,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     doSend(get(), content, currentModel);
   },
 
-  undoConversation: async (count) => {
+  undoConversation: async (count, revertFiles = false) => {
     const { isStreaming, isUndoing } = get();
     if (isStreaming) {
       throw new Error("Stop the current response before undoing the conversation.");
@@ -242,10 +263,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set({ isUndoing: true });
     try {
-      const result = await bridge.undoConversation(count);
+      const result = await bridge.undoConversation(count, revertFiles);
       if (!result.ok) {
         throw new Error("There is no active conversation to undo.");
       }
+      reportUndoFileChanges(result.files);
     } finally {
       set({ isUndoing: false });
     }

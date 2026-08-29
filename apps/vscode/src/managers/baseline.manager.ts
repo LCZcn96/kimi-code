@@ -14,10 +14,10 @@ import {
 } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import type { FileChange } from '../../shared/types';
+import type { FileChange, UndoFileChangesResult } from '../../shared/types';
 import { relativeFsPath } from '../utils/fs-path';
 
-const MANIFEST_VERSION = 1;
+const MANIFEST_VERSION = 2;
 const SNAPSHOT_HASH = /^[a-f0-9]{64}$/;
 
 export interface BaselineSession {
@@ -31,21 +31,36 @@ interface ManifestEntry {
   readonly existedBefore: boolean;
 }
 
-interface BaselineManifestV1 {
-  readonly version: 1;
+interface TurnFileEntry {
+  readonly beforeSnapshot: string;
+  readonly existedBefore: boolean;
+  readonly afterSnapshot?: string;
+  readonly existedAfter?: boolean;
+  readonly diverged?: boolean;
+}
+
+interface TurnEntry {
+  readonly id: string;
+  readonly files: Readonly<Record<string, TurnFileEntry>>;
+}
+
+interface BaselineManifestV2 {
+  readonly version: 2;
   readonly sessionId: string;
   readonly entries: Readonly<Record<string, ManifestEntry>>;
   readonly acceptedLegacyPaths: readonly string[];
+  readonly turns: readonly TurnEntry[];
 }
 
 interface MutableManifest {
-  version: 1;
+  version: 2;
   sessionId: string;
   entries: Record<string, ManifestEntry>;
   acceptedLegacyPaths: string[];
+  turns: Array<{ id: string; files: Record<string, TurnFileEntry> }>;
 }
 
-interface ResolvedFile {
+export interface ResolvedFile {
   readonly absolutePath: string;
   readonly relativePath: string;
 }
@@ -81,37 +96,239 @@ export class BaselineManager {
    * Persistence is serialized per session and completes through the returned
    * promise, but no `await` occurs before the original file has been read.
    */
-  async capture(session: BaselineSession, filePath: string): Promise<void> {
+  async capture(session: BaselineSession, filePath: string, turnId?: string): Promise<void> {
+    if (turnId !== undefined) requireTurnId(turnId);
     const resolved = resolveSessionFile(session, filePath);
     const captured = captureOriginal(resolved.absolutePath);
 
     await this.serialize([session.id], async () => {
       const manifest = await this.readManifest(session);
+      const next = mutableManifest(manifest);
+      let changed = false;
       const localPath = equivalentPath(
         session,
         Object.keys(manifest.entries),
         resolved.relativePath,
       );
-      if (localPath !== undefined) return;
-
-      const accepted = new Set(manifest.acceptedLegacyPaths);
-      const acceptedPath = equivalentPath(session, accepted, resolved.relativePath);
-      if (acceptedPath === undefined) {
-        const legacyExists = await this.hasLegacyBaseline(session, resolved.relativePath);
-        if (legacyExists) return;
+      if (localPath === undefined) {
+        const accepted = new Set(manifest.acceptedLegacyPaths);
+        const acceptedPath = equivalentPath(session, accepted, resolved.relativePath);
+        const useLegacy = acceptedPath === undefined
+          && await this.hasLegacyBaseline(session, resolved.relativePath);
+        if (!useLegacy) {
+          const snapshot = hash(captured.content);
+          await this.writeSnapshot(session.id, snapshot, captured.content);
+          if (acceptedPath !== undefined) accepted.delete(acceptedPath);
+          next.entries[resolved.relativePath] = {
+            snapshot,
+            existedBefore: captured.existedBefore,
+          };
+          next.acceptedLegacyPaths = uniquePaths(session, accepted);
+          changed = true;
+        }
       }
 
-      const snapshot = hash(captured.content);
-      await this.writeSnapshot(session.id, snapshot, captured.content);
-      if (acceptedPath !== undefined) accepted.delete(acceptedPath);
+      if (turnId !== undefined) {
+        let turn = next.turns.find((entry) => entry.id === turnId);
+        if (turn === undefined) {
+          turn = { id: turnId, files: {} };
+          next.turns.push(turn);
+          changed = true;
+        }
+        const turnPath = equivalentPath(session, Object.keys(turn.files), resolved.relativePath);
+        if (turnPath === undefined) {
+          const beforeSnapshot = hash(captured.content);
+          await this.writeSnapshot(session.id, beforeSnapshot, captured.content);
+          turn.files[resolved.relativePath] = {
+            beforeSnapshot,
+            existedBefore: captured.existedBefore,
+          };
+          changed = true;
+        } else {
+          const entry = turn.files[turnPath];
+          const current = captured.existedBefore ? captured.content : undefined;
+          if (
+            entry?.afterSnapshot !== undefined
+            && entry.existedAfter !== undefined
+            && entry.diverged !== true
+            && !matchesTurnOutput(current, entry)
+          ) {
+            turn.files[turnPath] = { ...entry, diverged: true };
+            changed = true;
+          }
+        }
+      }
 
+      if (changed) await this.writeManifest(next);
+    });
+  }
+
+  async captureTurnOutput(
+    session: BaselineSession,
+    filePath: string,
+    turnId: string,
+  ): Promise<void> {
+    requireTurnId(turnId);
+    const resolved = resolveSessionFile(session, filePath);
+    const captured = captureOriginal(resolved.absolutePath);
+
+    await this.serialize([session.id], async () => {
+      const manifest = await this.readManifest(session);
       const next = mutableManifest(manifest);
-      next.entries[resolved.relativePath] = {
-        snapshot,
-        existedBefore: captured.existedBefore,
+      const turn = next.turns.find((entry) => entry.id === turnId);
+      if (turn === undefined) return;
+      const turnPath = equivalentPath(session, Object.keys(turn.files), resolved.relativePath);
+      if (turnPath === undefined) return;
+      const entry = turn.files[turnPath];
+      if (entry === undefined) return;
+
+      const afterSnapshot = hash(captured.content);
+      await this.writeSnapshot(session.id, afterSnapshot, captured.content);
+      turn.files[turnPath] = {
+        ...entry,
+        afterSnapshot,
+        existedAfter: captured.existedBefore,
       };
-      next.acceptedLegacyPaths = uniquePaths(session, accepted);
       await this.writeManifest(next);
+    });
+  }
+
+  async finishTurn(session: BaselineSession, turnId: string): Promise<void> {
+    requireTurnId(turnId);
+    await this.serialize([session.id], async () => {
+      const manifest = await this.readManifest(session);
+      const next = mutableManifest(manifest);
+      let turn = next.turns.find((entry) => entry.id === turnId);
+      let changed = false;
+      if (turn === undefined) {
+        turn = { id: turnId, files: {} };
+        next.turns.push(turn);
+        changed = true;
+      }
+
+      for (const [relativePath, entry] of Object.entries(turn.files)) {
+        if (entry.afterSnapshot !== undefined && entry.existedAfter !== undefined) continue;
+        const current = await readCurrentFile(resolveSessionFile(session, relativePath).absolutePath);
+        const afterSnapshot = hash(current ?? '');
+        await this.writeSnapshot(session.id, afterSnapshot, current ?? '');
+        turn.files[relativePath] = {
+          ...entry,
+          afterSnapshot,
+          existedAfter: current !== undefined,
+        };
+        changed = true;
+      }
+
+      if (changed) await this.writeManifest(next);
+    });
+  }
+
+  async undoTurns(
+    session: BaselineSession,
+    count: number,
+    restoreFiles: boolean,
+    isRestoreProtected: (absolutePath: string) => boolean = () => false,
+  ): Promise<UndoFileChangesResult> {
+    if (!Number.isSafeInteger(count) || count <= 0) {
+      throw new BaselineError('The turn undo count must be a positive safe integer');
+    }
+
+    return this.serialize([session.id], async () => {
+      const manifest = await this.readManifest(session);
+      const next = mutableManifest(manifest);
+      const available = count <= next.turns.length;
+      const start = Math.max(0, next.turns.length - count);
+      const turns = available ? next.turns.slice(start) : [];
+      next.turns.splice(start);
+
+      if (!restoreFiles || !available) {
+        await this.writeManifest(next);
+        await this.removeUnreferencedSnapshots(session.id, next);
+        return emptyUndoResult(restoreFiles ? 'unavailable' : 'kept');
+      }
+
+      const targets = new Map<string, {
+        relativePath: string;
+        before: TurnFileEntry;
+        after: TurnFileEntry;
+        diverged: boolean;
+      }>();
+      for (const turn of turns) {
+        for (const [relativePath, entry] of Object.entries(turn.files)) {
+          const key = pathComparisonKey(session, relativePath);
+          const existing = targets.get(key);
+          if (existing === undefined) {
+            targets.set(key, {
+              relativePath,
+              before: entry,
+              after: entry,
+              diverged: entry.diverged === true,
+            });
+          } else {
+            existing.after = entry;
+            existing.diverged ||= entry.diverged === true;
+          }
+        }
+      }
+
+      const plans: Array<{
+        relativePath: string;
+        absolutePath: string;
+        before: BaselineValue;
+        after: TurnFileEntry;
+        diverged: boolean;
+      }> = [];
+      const result = emptyUndoResult('restored');
+      for (const target of [...targets.values()].toSorted((a, b) =>
+        a.relativePath.localeCompare(b.relativePath))) {
+        try {
+          const content = await this.readSnapshot(
+            session.id,
+            target.before.beforeSnapshot,
+            target.relativePath,
+          );
+          plans.push({
+            relativePath: target.relativePath,
+            absolutePath: resolveSessionFile(session, target.relativePath).absolutePath,
+            before: { content, existedBefore: target.before.existedBefore },
+            after: target.after,
+            diverged: target.diverged,
+          });
+        } catch {
+          result.failed.push(target.relativePath);
+        }
+      }
+
+      // Remove the conversation anchors before touching files so later turns
+      // cannot be matched against history the engine has already discarded.
+      await this.writeManifest(next);
+
+      for (const plan of plans) {
+        try {
+          if (plan.diverged || isRestoreProtected(plan.absolutePath)) {
+            result.conflicted.push(plan.relativePath);
+            continue;
+          }
+          const current = await readCurrentFile(plan.absolutePath);
+          if (matchesBaseline(current, plan.before)) {
+            (plan.before.existedBefore ? result.restored : result.removed).push(plan.relativePath);
+            continue;
+          }
+          if (!matchesTurnOutput(current, plan.after)) {
+            result.conflicted.push(plan.relativePath);
+            continue;
+          }
+          await restoreFile(session.workDir, plan.absolutePath, plan.before);
+          (plan.before.existedBefore ? result.restored : result.removed).push(plan.relativePath);
+        } catch {
+          result.failed.push(plan.relativePath);
+        }
+      }
+      if (result.conflicted.length > 0 || result.failed.length > 0) {
+        result.status = 'partial';
+      }
+      await this.removeUnreferencedSnapshots(session.id, next);
+      return result;
     });
   }
 
@@ -187,6 +404,10 @@ export class BaselineManager {
         );
       }
       await restoreFile(session.workDir, resolved.absolutePath, baseline);
+      const next = mutableManifest(manifest);
+      removeTurnFile(session, next, resolved.relativePath);
+      await this.writeManifest(next);
+      await this.removeUnreferencedSnapshots(session.id, next);
     });
   }
 
@@ -203,6 +424,10 @@ export class BaselineManager {
           baseline,
         );
       }
+      const next = mutableManifest(manifest);
+      clearTurnFiles(next);
+      await this.writeManifest(next);
+      await this.removeUnreferencedSnapshots(session.id, next);
     });
   }
 
@@ -217,7 +442,8 @@ export class BaselineManager {
       );
       const hadLocal = localPath !== undefined;
       const hasLegacy = await this.hasLegacyBaseline(session, resolved.relativePath);
-      if (!hadLocal && !hasLegacy) return;
+      const hadTurn = hasTurnFile(session, manifest, resolved.relativePath);
+      if (!hadLocal && !hasLegacy && !hadTurn) return;
 
       const next = mutableManifest(manifest);
       if (localPath !== undefined) delete next.entries[localPath];
@@ -226,6 +452,7 @@ export class BaselineManager {
       if (acceptedPath !== undefined) accepted.delete(acceptedPath);
       if (hasLegacy) accepted.add(resolved.relativePath);
       next.acceptedLegacyPaths = uniquePaths(session, accepted);
+      removeTurnFile(session, next, resolved.relativePath);
 
       await this.writeManifest(next);
       await this.removeUnreferencedSnapshots(session.id, next);
@@ -242,6 +469,7 @@ export class BaselineManager {
         ...next.acceptedLegacyPaths,
         ...legacyPaths,
       ]);
+      clearTurnFiles(next);
 
       await this.writeManifest(next);
       await this.removeUnreferencedSnapshots(session.id, next);
@@ -294,7 +522,7 @@ export class BaselineManager {
 
   private async effectivePaths(
     session: BaselineSession,
-    manifest: BaselineManifestV1,
+    manifest: BaselineManifestV2,
   ): Promise<string[]> {
     const paths = new Map<string, string>();
     for (const relativePath of Object.keys(manifest.entries)) {
@@ -315,7 +543,7 @@ export class BaselineManager {
   private async readEffectiveBaseline(
     session: BaselineSession,
     relativePath: string,
-    manifest: BaselineManifestV1,
+    manifest: BaselineManifestV2,
   ): Promise<BaselineValue | undefined> {
     const localPath = equivalentPath(session, Object.keys(manifest.entries), relativePath);
     const local = localPath === undefined ? undefined : manifest.entries[localPath];
@@ -330,7 +558,7 @@ export class BaselineManager {
     return this.readLegacyBaseline(session, relativePath);
   }
 
-  private async readManifest(session: BaselineSession): Promise<BaselineManifestV1> {
+  private async readManifest(session: BaselineSession): Promise<BaselineManifestV2> {
     requireSession(session);
     let text: string;
     try {
@@ -353,10 +581,11 @@ export class BaselineManager {
     return parseManifest(parsed, session);
   }
 
-  private async writeManifest(manifest: BaselineManifestV1): Promise<void> {
+  private async writeManifest(manifest: BaselineManifestV2): Promise<void> {
     if (
       Object.keys(manifest.entries).length === 0 &&
-      manifest.acceptedLegacyPaths.length === 0
+      manifest.acceptedLegacyPaths.length === 0 &&
+      manifest.turns.length === 0
     ) {
       await rm(this.sessionRoot(manifest.sessionId), { recursive: true, force: true });
       return;
@@ -412,7 +641,7 @@ export class BaselineManager {
 
   private async removeUnreferencedSnapshots(
     sessionId: string,
-    manifest: BaselineManifestV1,
+    manifest: BaselineManifestV2,
   ): Promise<void> {
     const snapshotsDir = this.snapshotsRoot(sessionId);
     let names: string[];
@@ -426,6 +655,12 @@ export class BaselineManager {
     }
 
     const referenced = new Set(Object.values(manifest.entries).map((entry) => entry.snapshot));
+    for (const turn of manifest.turns) {
+      for (const entry of Object.values(turn.files)) {
+        referenced.add(entry.beforeSnapshot);
+        if (entry.afterSnapshot !== undefined) referenced.add(entry.afterSnapshot);
+      }
+    }
     await Promise.all(
       names.map(async (name) => {
         if (referenced.has(name)) return;
@@ -537,21 +772,28 @@ export class BaselineManager {
   }
 }
 
-function emptyManifest(sessionId: string): BaselineManifestV1 {
-  return { version: MANIFEST_VERSION, sessionId, entries: {}, acceptedLegacyPaths: [] };
+function emptyManifest(sessionId: string): BaselineManifestV2 {
+  return {
+    version: MANIFEST_VERSION,
+    sessionId,
+    entries: {},
+    acceptedLegacyPaths: [],
+    turns: [],
+  };
 }
 
-function mutableManifest(manifest: BaselineManifestV1): MutableManifest {
+function mutableManifest(manifest: BaselineManifestV2): MutableManifest {
   return {
     version: MANIFEST_VERSION,
     sessionId: manifest.sessionId,
     entries: { ...manifest.entries },
     acceptedLegacyPaths: [...manifest.acceptedLegacyPaths],
+    turns: manifest.turns.map((turn) => ({ id: turn.id, files: { ...turn.files } })),
   };
 }
 
-function parseManifest(value: unknown, session: BaselineSession): BaselineManifestV1 {
-  if (!isRecord(value) || value['version'] !== MANIFEST_VERSION) {
+function parseManifest(value: unknown, session: BaselineSession): BaselineManifestV2 {
+  if (!isRecord(value) || (value['version'] !== 1 && value['version'] !== MANIFEST_VERSION)) {
     throw new BaselineError(`Unsupported baseline manifest for session "${session.id}"`);
   }
   if (value['sessionId'] !== session.id) {
@@ -601,11 +843,71 @@ function parseManifest(value: unknown, session: BaselineSession): BaselineManife
     }
   }
 
+  const rawTurns = value['version'] === 1 ? [] : value['turns'];
+  if (!Array.isArray(rawTurns)) {
+    throw new BaselineError(`Invalid turn snapshots for session "${session.id}"`);
+  }
+  const turns: Array<{ id: string; files: Record<string, TurnFileEntry> }> = [];
+  const turnIds = new Set<string>();
+  for (const rawTurn of rawTurns) {
+    if (!isRecord(rawTurn) || typeof rawTurn['id'] !== 'string' || !isRecord(rawTurn['files'])) {
+      throw new BaselineError(`Invalid turn snapshot in session "${session.id}"`);
+    }
+    requireTurnId(rawTurn['id']);
+    if (turnIds.has(rawTurn['id'])) {
+      throw new BaselineError(`Duplicate turn snapshot "${rawTurn['id']}" in session "${session.id}"`);
+    }
+    turnIds.add(rawTurn['id']);
+
+    const files: Record<string, TurnFileEntry> = {};
+    const fileKeys = new Set<string>();
+    for (const [rawPath, rawEntry] of Object.entries(rawTurn['files'])) {
+      if (
+        !isRecord(rawEntry)
+        || typeof rawEntry['beforeSnapshot'] !== 'string'
+        || !SNAPSHOT_HASH.test(rawEntry['beforeSnapshot'])
+        || typeof rawEntry['existedBefore'] !== 'boolean'
+      ) {
+        throw new BaselineError(`Invalid turn baseline entry "${rawPath}" in session "${session.id}"`);
+      }
+      const hasAfterSnapshot = rawEntry['afterSnapshot'] !== undefined;
+      const hasExistedAfter = rawEntry['existedAfter'] !== undefined;
+      if (
+        hasAfterSnapshot !== hasExistedAfter
+        || (hasAfterSnapshot
+          && (typeof rawEntry['afterSnapshot'] !== 'string'
+            || !SNAPSHOT_HASH.test(rawEntry['afterSnapshot'])
+            || typeof rawEntry['existedAfter'] !== 'boolean'))
+      ) {
+        throw new BaselineError(`Invalid completed turn entry "${rawPath}" in session "${session.id}"`);
+      }
+      if (rawEntry['diverged'] !== undefined && typeof rawEntry['diverged'] !== 'boolean') {
+        throw new BaselineError(`Invalid turn divergence for "${rawPath}" in session "${session.id}"`);
+      }
+
+      const relativePath = resolveSessionFile(session, rawPath).relativePath;
+      const comparisonKey = pathComparisonKey(session, relativePath);
+      if (relativePath !== rawPath || fileKeys.has(comparisonKey)) {
+        throw new BaselineError(`Unsafe turn baseline path "${rawPath}" in session "${session.id}"`);
+      }
+      fileKeys.add(comparisonKey);
+      files[relativePath] = {
+        beforeSnapshot: rawEntry['beforeSnapshot'],
+        existedBefore: rawEntry['existedBefore'],
+        afterSnapshot: hasAfterSnapshot ? rawEntry['afterSnapshot'] as string : undefined,
+        existedAfter: hasExistedAfter ? rawEntry['existedAfter'] as boolean : undefined,
+        diverged: rawEntry['diverged'],
+      };
+    }
+    turns.push({ id: rawTurn['id'], files });
+  }
+
   return {
     version: MANIFEST_VERSION,
     sessionId: session.id,
     entries,
     acceptedLegacyPaths: uniquePaths(session, acceptedLegacyPaths),
+    turns,
   };
 }
 
@@ -621,6 +923,45 @@ function equivalentPath(
   return undefined;
 }
 
+function hasTurnFile(
+  session: BaselineSession,
+  manifest: BaselineManifestV2,
+  relativePath: string,
+): boolean {
+  return manifest.turns.some((turn) =>
+    equivalentPath(session, Object.keys(turn.files), relativePath) !== undefined);
+}
+
+function removeTurnFile(
+  session: BaselineSession,
+  manifest: MutableManifest,
+  relativePath: string,
+): void {
+  for (const turn of manifest.turns) {
+    const existing = equivalentPath(session, Object.keys(turn.files), relativePath);
+    if (existing !== undefined) delete turn.files[existing];
+  }
+}
+
+function clearTurnFiles(manifest: MutableManifest): void {
+  for (const turn of manifest.turns) turn.files = {};
+}
+
+function matchesTurnOutput(current: string | undefined, entry: TurnFileEntry): boolean {
+  if (entry.afterSnapshot === undefined || entry.existedAfter === undefined) return false;
+  if (current === undefined) return !entry.existedAfter;
+  return entry.existedAfter && hash(current) === entry.afterSnapshot;
+}
+
+function matchesBaseline(current: string | undefined, baseline: BaselineValue): boolean {
+  if (current === undefined) return !baseline.existedBefore;
+  return baseline.existedBefore && current === baseline.content;
+}
+
+function emptyUndoResult(status: UndoFileChangesResult['status']): UndoFileChangesResult {
+  return { status, restored: [], removed: [], conflicted: [], failed: [] };
+}
+
 function uniquePaths(session: BaselineSession, paths: Iterable<string>): string[] {
   const unique = new Map<string, string>();
   for (const relativePath of paths) {
@@ -634,7 +975,7 @@ function pathComparisonKey(session: BaselineSession, relativePath: string): stri
   return isWindowsAbsolute(session.workDir) ? relativePath.toLowerCase() : relativePath;
 }
 
-function resolveSessionFile(session: BaselineSession, filePath: string): ResolvedFile {
+export function resolveSessionFile(session: BaselineSession, filePath: string): ResolvedFile {
   requireSession(session);
   if (filePath.length === 0) throw new BaselineError('The baseline file path is empty');
 
@@ -828,6 +1169,10 @@ function requireSession(session: BaselineSession): void {
 
 function requireSessionId(sessionId: string): void {
   if (sessionId.length === 0) throw new BaselineError('The baseline session id is empty');
+}
+
+function requireTurnId(turnId: string): void {
+  if (turnId.length === 0) throw new BaselineError('The baseline turn id is empty');
 }
 
 function hash(value: string): string {

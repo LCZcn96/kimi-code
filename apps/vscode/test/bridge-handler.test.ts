@@ -191,16 +191,27 @@ describe("Webview RPC boundary (validates requests before host dispatch)", () =>
   });
 
   it("undoes the requested number of prompts in the view's runtime", async () => {
-    const undoConversation = vi.fn(async () => undefined);
+    const files = {
+      status: "restored" as const,
+      restored: ["src/index.ts"],
+      removed: [],
+      conflicted: [],
+      failed: [],
+    };
+    const undoConversation = vi.fn(async () => files);
     vi.spyOn(bridge.runtime, "getSessionForView").mockReturnValue({ undoConversation } as never);
 
     const result = await bridge.handle(
-      { id: "rpc-undo", method: Methods.UndoConversation, params: { count: 2 } },
+      {
+        id: "rpc-undo",
+        method: Methods.UndoConversation,
+        params: { count: 2, revertFiles: true },
+      },
       "view-1",
     );
 
-    expect(result).toEqual({ id: "rpc-undo", result: { ok: true } });
-    expect(undoConversation).toHaveBeenCalledWith(2);
+    expect(result).toEqual({ id: "rpc-undo", result: { ok: true, files } });
+    expect(undoConversation).toHaveBeenCalledWith(2, true);
   });
 
   it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
@@ -221,6 +232,26 @@ describe("Webview RPC boundary (validates requests before host dispatch)", () =>
       expect(undoConversation).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects a non-boolean file rollback choice before dispatch", async () => {
+    const undoConversation = vi.fn();
+    vi.spyOn(bridge.runtime, "getSessionForView").mockReturnValue({ undoConversation } as never);
+
+    const result = await bridge.handle(
+      {
+        id: "rpc-undo",
+        method: Methods.UndoConversation,
+        params: { count: 1, revertFiles: "yes" },
+      },
+      "view-1",
+    );
+
+    expect(result).toEqual({
+      id: "rpc-undo",
+      error: "Invalid bridge params for method: undoConversation",
+    });
+    expect(undoConversation).not.toHaveBeenCalled();
+  });
 
   it.each(["missingMethod", "toString", "constructor", "__proto__"])(
     "does not dispatch the unknown or prototype method %s",
