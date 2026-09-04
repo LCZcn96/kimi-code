@@ -9,7 +9,7 @@ Moonshot AI. The upstream project remains
 
 The community release changes and distributes only `apps/vscode`. It does not
 publish replacement CLI, SDK, npm, Marketplace, or Open VSX packages. Version
-0.4.2 is based on upstream VS Code extension 0.7.3 at commit `d8317d81e` and
+0.7.5 is based on upstream VS Code extension 0.7.5 at commit `523d35b54` and
 contains:
 
 - the long-running stream timeout fix proposed in upstream PR
@@ -35,7 +35,8 @@ before installing the community VSIX.
 
 ## Releases
 
-Windows x64 is the initial supported target. Each `community-vX.Y.Z` Git tag is
+Windows x64 is the initial supported target. Each `community-vX.Y.Z` Git tag
+uses the same `X.Y.Z` as the corresponding official VS Code extension and is
 built on GitHub Actions from source. Its GitHub Release contains the VSIX and a
 UTF-8, no-BOM `SHA256SUMS.txt` file. Install and update manually:
 
@@ -69,8 +70,8 @@ After resolving a duplicate or conflicting upstream fix, retain the upstream
 implementation when it satisfies the downstream regression tests. Keep
 fork-only changes as small commits grouped by concern. Before a release:
 
-1. Update `apps/vscode/package.json` and this document to the next community
-   version.
+1. Update `apps/vscode/package.json` and this document to the current upstream
+   VS Code extension version.
 2. Run the focused VS Code tests, typecheck, VSIX packaging, package audit, and
    extension-host smoke test on the target platform.
 3. Push `community`, then create and push `community-vX.Y.Z`. The tag must match

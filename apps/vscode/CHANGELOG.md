@@ -1,5 +1,16 @@
 # Changelog
 
+## Community build 0.7.5
+
+### Changed
+
+- Synchronized the community extension version and codebase with upstream VS
+  Code extension 0.7.5.
+
+### Fixed
+
+- Preserved each prompt's original timestamp when replaying session history.
+
 ## Community build 0.4.2
 
 ### Changed
