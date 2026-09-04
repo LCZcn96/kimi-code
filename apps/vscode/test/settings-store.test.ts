@@ -593,6 +593,20 @@ describe("Webview streaming rendering", () => {
 });
 
 describe("Webview prompt navigation", () => {
+  it("uses the persisted prompt time supplied by session replay", () => {
+    const promptTime = Date.UTC(2026, 8, 4, 1, 23);
+
+    useChatStore.getState().processEvent({
+      type: "TurnBegin",
+      payload: { user_input: "Keep the original time", timestamp: promptTime },
+    });
+
+    expect(useChatStore.getState().messages.map((message) => message.timestamp)).toEqual([
+      promptTime,
+      promptTime,
+    ]);
+  });
+
   it("pairs each user prompt with the following assistant preview", () => {
     const messages: ChatMessageType[] = [
       { id: "user-one", role: "user", content: "<system>hidden context</system>  First\n\nprompt  ", timestamp: 1 },

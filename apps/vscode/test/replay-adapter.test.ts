@@ -170,7 +170,7 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
     expect(events.filter((event) => event.type !== "StatusUpdate")).toEqual([
       {
         type: "TurnBegin",
-        payload: { user_input: [{ type: "text", text: "Fix the test" }] },
+        payload: { user_input: [{ type: "text", text: "Fix the test" }], timestamp: 1 },
         _sessionId: "session-1",
       },
       {
@@ -179,6 +179,23 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
         _sessionId: "session-1",
       },
     ]);
+  });
+
+  it("preserves the persisted time of a replayed user prompt", () => {
+    const promptTime = Date.UTC(2026, 8, 4, 1, 23);
+    const events = replay([
+      record(
+        message("user", [{ type: "text", text: "Keep the original time" }], {
+          origin: { kind: "user" },
+        }),
+        promptTime,
+      ),
+    ]);
+
+    expect(events.find((event) => event.type === "TurnBegin")).toMatchObject({
+      type: "TurnBegin",
+      payload: { timestamp: promptTime },
+    });
   });
 
   it("converts SDK media keys when replay renders a user prompt", () => {
@@ -204,6 +221,7 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
           { type: "audio_url", audio_url: { url: "file:///workspace/a.mp3", id: "audio-1" } },
           { type: "video_url", video_url: { url: "file:///workspace/a.mp4", id: "video-1" } },
         ],
+        timestamp: 1,
       },
       _sessionId: "session-1",
     });
@@ -403,7 +421,7 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
     expect(events.filter((event) => event.type === "TurnBegin")).toEqual([
       {
         type: "TurnBegin",
-        payload: { user_input: [{ type: "text", text: "Visible prompt" }] },
+        payload: { user_input: [{ type: "text", text: "Visible prompt" }], timestamp: 2 },
         _sessionId: "session-1",
       },
     ]);
@@ -426,7 +444,7 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
 
     expect(events).toContainEqual({
       type: "TurnBegin",
-      payload: { user_input: [{ type: "text", text: "/skill:review focus on errors" }] },
+      payload: { user_input: [{ type: "text", text: "/skill:review focus on errors" }], timestamp: 1 },
       _sessionId: "session-1",
     });
   });
@@ -453,7 +471,7 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
 
     expect(events).toContainEqual({
       type: "TurnBegin",
-      payload: { user_input: [{ type: "text", text: "/import notes.md" }] },
+      payload: { user_input: [{ type: "text", text: "/import notes.md" }], timestamp: 1 },
       _sessionId: "session-1",
     });
     expect(events).toContainEqual({

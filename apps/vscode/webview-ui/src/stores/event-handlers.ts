@@ -410,12 +410,13 @@ const eventHandlers: Record<string, EventHandler> = {
   TurnBegin: (draft, payload: TurnBegin & { forkable?: boolean }) => {
     draft.tokenUsage = createEmptyTokenUsage();
     draft.activeTokenUsage = createEmptyTokenUsage();
+    const timestamp = payload.timestamp ?? Date.now();
 
     draft.messages.push({
       id: crypto.randomUUID(),
       role: "user",
       content: payload.user_input,
-      timestamp: Date.now(),
+      timestamp,
       forkable: payload.forkable,
     });
 
@@ -423,7 +424,7 @@ const eventHandlers: Record<string, EventHandler> = {
       id: crypto.randomUUID(),
       role: "assistant",
       content: "",
-      timestamp: Date.now(),
+      timestamp,
       steps: [],
       forkable: payload.forkable,
     });

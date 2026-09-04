@@ -104,6 +104,7 @@ function replayAgentToWebviewEvents(
                 type: "TurnBegin",
                 payload: {
                   user_input: imported?.input ?? replayUserInput(message.content, message.origin),
+                  timestamp: record.time,
                 },
               },
               sessionId,
