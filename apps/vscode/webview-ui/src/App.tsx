@@ -1,5 +1,6 @@
 // node/vscode_extension/webview-ui/src/App.tsx
 import { useEffect, useState, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Header } from "./components/Header";
 import { ChatArea } from "./components/ChatArea";
 import { InputArea } from "./components/inputarea/InputArea";
@@ -21,7 +22,8 @@ function MainContent({ onAuthAction }: { onAuthAction: () => void }) {
   const processEvent = useChatStore((state) => state.processEvent);
   const startNewConversation = useChatStore((state) => state.startNewConversation);
   const sessionId = useChatStore((state) => state.sessionId);
-  const { setMCPServers, setExtensionConfig, extensionConfig } = useSettingsStore();
+  const { setExtensionConfig, extensionConfig } = useSettingsStore();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const streamEvents = createStreamEventBuffer((event) => {
@@ -49,7 +51,7 @@ function MainContent({ onAuthAction }: { onAuthAction: () => void }) {
 
   useEffect(() => {
     const unsubs = [
-      bridge.on(Events.MCPServersChanged, setMCPServers),
+      bridge.on(Events.MCPServersChanged, () => void queryClient.invalidateQueries({ queryKey: ["mcpServers"] })),
       bridge.on(Events.ExtensionConfigChanged, ({ config }: { config: ExtensionConfig }) => setExtensionConfig(config)),
       bridge.on(Events.FocusInput, () => document.querySelector<HTMLTextAreaElement>("textarea")?.focus()),
       bridge.on(Events.NewConversation, () => {
@@ -59,7 +61,7 @@ function MainContent({ onAuthAction }: { onAuthAction: () => void }) {
       }),
     ];
     return () => unsubs.forEach((u) => u());
-  }, [setMCPServers, setExtensionConfig, startNewConversation]);
+  }, [queryClient, setExtensionConfig, startNewConversation]);
 
   useEffect(() => {
     if (!extensionConfig.enableNewConversationShortcut) return;

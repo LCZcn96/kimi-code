@@ -18,8 +18,6 @@ import { IConfigService } from '#/app/config/config';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IProtocolAdapterRegistry, type Protocol } from '#/kosong/protocol/protocol';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
-import { AgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContextService';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -52,8 +50,9 @@ const KEY = 'profile-test';
 function createTelemetryStub(): ITelemetryService {
   return {
     _serviceBrand: undefined,
-    track: () => undefined,
     track2: () => undefined,
+    setContext: () => undefined,
+    getContext: () => ({}),
   } as unknown as ITelemetryService;
 }
 
@@ -199,10 +198,6 @@ function buildHost(key: string): {
   host.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   host.stub(ITelemetryService, createTelemetryStub());
   host.stub(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
-  host.stub(
-    IAgentTelemetryContextService,
-    new AgentTelemetryContextService(),
-  );
   host.stub(IConfigService, createConfigStub());
   host.stub(IModelCatalog, modelCatalog);
   host.stub(IProtocolAdapterRegistry, createProtocolRegistryStub());
@@ -352,13 +347,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
   });
 
   it('persists the rendered prompt and disclosure snapshot in one bind record', async () => {
-    const environment: EnvironmentDisclosureSnapshot = {
-      cwd: '/work',
-      date: {
-        disclosed: true,
-        value: { localDate: '2026-07-29', timeZone: 'Asia/Shanghai' },
-      },
-    };
+    const environment: EnvironmentDisclosureSnapshot = { cwd: '/work' };
     svc.applyBindingSnapshot({
       modelAlias: 'kimi-code',
       profileName: 'agent',
@@ -397,13 +386,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
   });
 
   it('replays a legacy config.update record with an explicit renderGeneration verbatim', async () => {
-    const environment: EnvironmentDisclosureSnapshot = {
-      cwd: '/work',
-      date: {
-        disclosed: true,
-        value: { localDate: '2026-07-29', timeZone: 'Asia/Shanghai' },
-      },
-    };
+    const environment: EnvironmentDisclosureSnapshot = { cwd: '/work' };
 
     const replay = buildHost('profile-replay-legacy-generation');
     await restoreTestEventDispatcher(

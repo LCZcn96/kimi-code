@@ -301,6 +301,7 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
     createSession: vi.fn(async () => session),
     resumeSession: vi.fn(async () => session),
     forkSession: vi.fn(async () => session),
+    reloadSession: vi.fn(async () => session),
     listSessions: vi.fn(async () => []),
     exportSession: vi.fn(async () => ({
       zipPath: '/tmp/fake-session.zip',
@@ -2113,11 +2114,15 @@ command = "vim"
     driver.handleUserInput('/reload');
 
     await vi.waitFor(() => {
-      expect(session.reloadSession).toHaveBeenCalledOnce();
+      expect(harness.reloadSession).toHaveBeenCalledWith({
+        id: session.id,
+        forcePluginSessionStartReminder: true,
+      });
     });
     await vi.waitFor(() => {
       expect(driver.state.appState.theme).toBe('light');
     });
+    expect(session.reloadSession).not.toHaveBeenCalled();
     expect(harness.track).toHaveBeenCalledWith('input_command', { command: 'reload' });
     const transcript = stripSgr(renderTranscript(driver));
     expect(transcript).toContain('hello before reload');
@@ -2613,7 +2618,10 @@ command = "vim"
     expect(driver.state.appState).toMatchObject({
       permissionMode: 'yolo',
     });
-    expect(harness.track).toHaveBeenCalledWith('input_command', { command: 'yolo' });
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'In this mode, Kimi Code can modify or delete files without your confirmation',
+    );
+    expect(harness.track).toHaveBeenCalledWith('input_command', { command: 'ask-when-needed' });
     expect(harness.track).not.toHaveBeenCalledWith('yolo_toggle', expect.anything());
   });
 
@@ -2835,7 +2843,7 @@ command = "vim"
     driver.handleUserInput('/auto on');
 
     await vi.waitFor(() => {
-      expect(stripSgr(renderTranscript(driver))).toContain('Auto mode: ON');
+      expect(stripSgr(renderTranscript(driver))).toContain('Never Ask mode: ON');
     });
 
     driver.handleUserInput('/undo 10');
@@ -2855,7 +2863,10 @@ command = "vim"
     const transcript = stripSgr(renderTranscript(driver));
     expect(transcript).not.toContain('hello');
     expect(transcript).not.toContain('Cannot undo 10 prompts');
-    expect(transcript).toContain('Auto mode: ON');
+    expect(transcript).toContain('Never Ask mode: ON');
+    expect(transcript).toContain(
+      'In this mode, Kimi Code can modify or delete files without your confirmation',
+    );
     expect(driver.state.appState.permissionMode).toBe('auto');
   });
 
@@ -4308,7 +4319,7 @@ command = "vim"
     driver.handleUserInput('seq 30');
     await vi.waitFor(() => {
       const transcript = stripSgr(driver.state.transcriptContainer.render(120).join('\n'));
-      expect(transcript).toContain('... (20 more lines, ctrl+o to expand)');
+      expect(transcript).toContain('… (20 more lines, ctrl+o to expand)');
     });
 
     let transcript = stripSgr(driver.state.transcriptContainer.render(120).join('\n'));
@@ -4322,7 +4333,7 @@ command = "vim"
 
     driver.state.editor.onToggleToolExpand?.();
     transcript = stripSgr(driver.state.transcriptContainer.render(120).join('\n'));
-    expect(transcript).toContain('... (20 more lines, ctrl+o to expand)');
+    expect(transcript).toContain('… (20 more lines, ctrl+o to expand)');
     expect(transcript).not.toContain('row-11');
   });
 
@@ -4844,7 +4855,7 @@ command = "vim"
       expect(session.startBtw).toHaveBeenCalledWith();
     });
     expect(session.prompt).not.toHaveBeenCalled();
-    expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question...');
+    expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question…');
 
     driver.handleUserInput('What are you working on right now?');
 
@@ -4885,7 +4896,7 @@ command = "vim"
     await vi.waitFor(() => {
       expect(session.startBtw).toHaveBeenCalledWith();
     });
-    expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question...');
+    expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question…');
 
     driver.handleUserInput('check /skill:review');
 
@@ -5179,7 +5190,7 @@ command = "vim"
     const lines = getMountedBtwPanel(driver).render(80).map(stripSgr);
     expect(lines).toHaveLength(3);
     expect(lines.join('\n')).toContain('Q: side question');
-    expect(lines.join('\n')).toContain('Waiting for answer...');
+    expect(lines.join('\n')).toContain('Waiting for answer…');
   });
 
   it('keeps /btw panel height stable when final output is shorter than thinking', async () => {
@@ -6152,7 +6163,7 @@ command = "vim"
 
     transcript = stripSgr(renderTranscript(driver));
     expect(transcript).toContain('001 [');
-    expect(transcript).toContain('Queued...');
+    expect(transcript).toContain('Queued…');
     expect(transcript).not.toContain('Provider rate limit');
     expect(transcript).not.toContain('Failed');
 
@@ -6191,7 +6202,7 @@ command = "vim"
     expect(transcript).toContain('001 [');
     expect(transcript).toContain('Reviewing src/a.ts');
     expect(transcript).not.toContain('Completed');
-    expect(transcript).toContain('002 Queued...');
+    expect(transcript).toContain('002 Queued…');
     expect(transcript).not.toContain('002 [');
 
     driver.sessionEventHandler.handleEvent(
@@ -6513,7 +6524,7 @@ command = "vim"
     const renderSwarm = (): string =>
       stripSgr(swarmProgress.render(transcriptWidth).join('\n'));
 
-    expect(renderSwarm()).toContain('001 Queued...');
+    expect(renderSwarm()).toContain('001 Queued…');
 
     driver.sessionEventHandler.handleEvent(
       {
@@ -6539,7 +6550,7 @@ command = "vim"
       .reduce((sum, child) => sum + child.render(transcriptWidth).length, 0);
     expect(rowsAfterSwarmInTranscript).toBeGreaterThan(0);
 
-    expect(renderSwarm()).toContain('001 Queued...');
+    expect(renderSwarm()).toContain('001 Queued…');
     const transcript = stripSgr(
       driver.state.transcriptContainer.render(terminalColumns).join('\n'),
     );
@@ -6612,7 +6623,7 @@ command = "vim"
 
     let transcript = stripSgr(renderTranscript(driver));
     expect(transcript).toContain('Agent Swarm');
-    expect(transcript).toContain('Orchestrating...');
+    expect(transcript).toContain('Orchestrating…');
     expect(transcript).not.toContain('01');
 
     driver.sessionEventHandler.handleEvent(
@@ -6649,7 +6660,7 @@ command = "vim"
     );
 
     transcript = stripSgr(renderTranscript(driver));
-    expect(transcript).toContain('001 Queued...');
+    expect(transcript).toContain('001 Queued…');
     expect(transcript).not.toContain('001 [');
     expect(transcript).toContain('002 src/b');
 
@@ -6671,8 +6682,8 @@ command = "vim"
     );
 
     transcript = stripSgr(renderTranscript(driver));
-    expect(transcript).toContain('001 Queued...');
-    expect(transcript).toContain('002 Queued...');
+    expect(transcript).toContain('001 Queued…');
+    expect(transcript).toContain('002 Queued…');
     expect(transcript).not.toContain('001 [');
     expect(transcript).not.toContain('002 [');
   });
@@ -6778,7 +6789,7 @@ command = "vim"
       expect(output).toContain('>_ Kimi Code');
       expect(output).toContain('Model');
       expect(output).toContain('thinking high');
-      expect(output).toContain('Permissions  auto');
+      expect(output).toContain('Permissions  Never Ask');
       expect(output).toContain('Plan mode    on');
       expect(output).toContain('Context window');
       expect(output).toContain('25%');

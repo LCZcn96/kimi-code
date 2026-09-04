@@ -28,7 +28,6 @@ import { IConfigService } from '#/app/config/config';
 import type { LoopControl } from '#/agent/loop/configSection';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
-import { IHostClock } from '#/os/interface/hostClock';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ToolSource } from '#/tool/toolContract';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -44,7 +43,6 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   extractAgentsMdPathsFromSystemPrompt,
@@ -145,12 +143,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @ITelemetryService private readonly telemetry: ITelemetryService,
-    @IAgentTelemetryContextService private readonly telemetryContext: IAgentTelemetryContextService,
     @IConfigService private readonly config: IConfigService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IProtocolAdapterRegistry private readonly protocolAdapters: IProtocolAdapterRegistry,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
-    @IHostClock private readonly clock: IHostClock,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
@@ -176,6 +172,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.states.contributeState(profileEmittedToolPatternWarningsKey);
     this.states.contributeState(profileEmittedPluginBudgetWarningsKey);
     this.configure({});
+    this._register(
+      this.dispatcher.hooks.onDidRestore.register('profile', async (_ctx, next) => {
+        this.syncTelemetryModelContext(this.modelAlias);
+        await next();
+      }),
+    );
     this._register(
       this.config.onDidSectionChange(({ domain }) => {
         if (domain === TOOLS_SECTION) {
@@ -546,11 +548,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private afterConfigDispatch(changed: Omit<ProfileUpdateData, 'activeToolNames'>): void {
     if (changed.modelAlias !== undefined) {
-      const model = this.tryResolveRawModel();
-      this.telemetryContext.set({
-        provider_type: model?.providerType ?? model?.protocol,
-        protocol: model?.protocol,
-      });
+      this.syncTelemetryModelContext(changed.modelAlias);
     }
     if (changed.modelAlias !== undefined || changed.thinkingLevel !== undefined) {
       this.warnAboutAnthropicThinkingEffort();
@@ -558,6 +556,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.emitStatusUpdated(
       changed.modelAlias !== undefined || changed.thinkingLevel !== undefined,
     );
+  }
+
+  private syncTelemetryModelContext(modelAlias: string | undefined): void {
+    if (modelAlias === undefined) {
+      return;
+    }
+    const model = this.tryResolveRawModel();
+    this.telemetry.setContext({
+      model: modelAlias,
+      provider_type: model?.providerType ?? model?.protocol,
+      protocol: model?.protocol,
+    });
   }
 
   private warnAboutAnthropicThinkingEffort(): void {
@@ -816,16 +826,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
     const skills = await this.resolveSkillListing();
     const pluginSections = await this.resolvePluginSections();
-    const now = this.clock.now();
-    const timeZone = this.clock.timeZone();
     return {
       ...base,
       cwd: view.workDir,
       osKind: env.osKind,
       shellName: env.shellName,
       shellPath: env.shellPath,
-      now: now.toISOString(),
-      timeZone,
       skills,
       pluginSections,
       skillActive: this.isToolActiveForProfile(profile, 'Skill'),

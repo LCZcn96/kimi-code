@@ -12,7 +12,7 @@ export function CompactionCard({ status }: { status: CompactionStatus }) {
         ? "Compaction blocked"
         : status === "interrupted"
           ? "Compaction interrupted"
-          : "Compacting context...";
+          : "Compacting context…";
   const dot = status === "completed"
     ? "bg-emerald-500"
     : status === "blocked"
